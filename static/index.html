@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kavach · Scam Call Shield</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hind:wght@400;500;600;700&family=Noto+Sans+Telugu:wght@400;600&family=Noto+Sans+Tamil:wght@400;600&family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f3ee; --panel: #ffffff; --ink: #1d1b19; --muted: #6d665e; --line: #e7e1d8;
+    --safe: #1f8a5b; --safe-bg: #e5f4ec;
+    --caution: #b86e00; --caution-bg: #fff1d9;
+    --danger: #c6283a; --danger-bg: #fde6e8;
+    --accent: #2b2a7a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141312; --panel:#1e1c1a; --ink:#f2eee8; --muted:#a39b91; --line:#33302c;
+      --safe-bg:#12291f; --caution-bg:#2e2410; --danger-bg:#34151a; --accent:#a9a7ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Hind", "Noto Sans Telugu", "Noto Sans Tamil", system-ui, sans-serif; font-size: 17px; }
+  header { display:flex; align-items:baseline; gap:12px; padding: 22px 28px 6px; max-width: 1180px; margin: 0 auto; }
+  h1 { font-family: "Fraunces", Georgia, serif; font-size: 34px; margin: 0; letter-spacing: -0.5px; }
+  header .sub { color: var(--muted); }
+  header .badge { margin-left:auto; font-size: 13px; color: var(--muted); }
+  main { display:grid; grid-template-columns: 400px 1fr; gap: 20px; padding: 14px 28px 28px; max-width: 1180px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 12px 16px; } header { padding: 18px 16px 4px; flex-wrap: wrap; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 20px; }
+
+  /* Status light */
+  #status { text-align:center; transition: background .3s, border-color .3s; }
+  #status.safe { background: var(--safe-bg); border-color: transparent; }
+  #status.caution { background: var(--caution-bg); border-color: var(--caution); }
+  #status.danger { background: var(--danger-bg); border-color: var(--danger); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 10px color-mix(in srgb, var(--danger) 18%, transparent); } }
+  .orb { width: 150px; height: 150px; border-radius: 50%; margin: 6px auto 14px; display:grid; place-items:center;
+    color:#fff; font-size: 46px; font-weight: 700; background: var(--muted); transition: background .3s; }
+  .safe .orb { background: var(--safe); } .caution .orb { background: var(--caution); } .danger .orb { background: var(--danger); }
+  .verdict { font-size: 28px; font-weight: 700; line-height: 1.2; }
+  .verdict-hi { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .scamtype { margin-top: 10px; font-size: 17px; color: var(--ink); min-height: 24px; }
+  .metric { margin-top: 8px; font-size: 14px; color: var(--muted); min-height: 20px; }
+
+  /* Controls */
+  .controls { display:grid; gap: 12px; margin-top: 16px; }
+  label.small { font-size: 14px; color: var(--muted); display:block; margin-bottom: 4px; }
+  select { width:100%; font: inherit; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  button, .filebtn { font: inherit; font-weight: 600; border: 0; border-radius: 14px; padding: 14px 16px; cursor: pointer; text-align:center; }
+  #listen { background: var(--accent); color: #fff; font-size: 20px; padding: 18px; }
+  #listen.on { background: var(--danger); }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+  .filebtn input { display:none; }
+  button:disabled { opacity: .5; cursor: default; }
+
+  /* Right column */
+  .right { display:grid; gap: 20px; grid-template-rows: auto 1fr; min-height: 0; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  #reasons { display:grid; gap: 10px; }
+  .reason { display:flex; gap: 12px; align-items:flex-start; padding: 10px 12px; border-radius: 12px; background: var(--bg); }
+  .reason .w { font-weight:700; color: var(--danger); min-width: 34px; }
+  .reason .t { font-weight: 600; }
+  .reason .hi { color: var(--muted); font-size: 15px; }
+  .chip { display:inline-block; font-size: 14px; padding: 1px 8px; margin: 4px 4px 0 0; border-radius: 999px; background: var(--danger-bg); color: var(--danger); }
+  .empty { color: var(--muted); }
+  #evon { margin-top: 12px; padding: 12px 14px; border-radius: 12px; border: 1px dashed var(--line); display:none; }
+  #evon b { color: var(--accent); }
+
+  #transcript { overflow-y:auto; max-height: 52vh; display:grid; gap: 8px; align-content: start; }
+  .line { padding: 10px 12px; border-radius: 12px; background: var(--bg); line-height: 1.45; font-size: 18px; }
+  .line.flagged { background: var(--danger-bg); }
+  .line .meta { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .line mark { background: var(--danger); color: #fff; padding: 0 4px; border-radius: 6px; }
+  #activity { font-size: 14px; color: var(--muted); min-height: 20px; margin-top: 8px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background: var(--safe); margin-right: 6px; vertical-align: middle; }
+  .dot.live { animation: blink 1s infinite; } @keyframes blink { 50% { opacity: .2; } }
+
+  footer { max-width:1180px; margin: 0 auto; padding: 0 28px 28px; color: var(--muted); font-size: 14px; }
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+    padding: 10px 16px; border-radius: 12px; font-size: 15px; display:none; max-width: 90vw; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Kavach</h1>
+  <span class="sub">कवच · scam call shield</span>
+  <span class="badge" id="badge">Prisma v3.0 · Timbre</span>
+</header>
+
+<main>
+  <section>
+    <div class="card safe" id="status">
+      <div class="orb" id="orb">✓</div>
+      <div class="verdict" id="verdict">Not listening</div>
+      <div class="verdict-hi" id="verdictHi">फ़ोन स्पीकर पर रखें और "Start" दबाएँ</div>
+      <div class="scamtype" id="scamtype"></div>
+      <div class="metric" id="metric"></div>
+    </div>
+
+    <div class="card controls">
+      <div>
+        <label class="small" for="lang">Call language</label>
+        <select id="lang">
+          <option value="hi-IN,en-IN">Hindi + English</option>
+          <option value="te-IN,en-IN">Telugu + English</option>
+          <option value="ta-IN,en-IN">Tamil + English</option>
+          <option value="kn-IN,en-IN">Kannada + English</option>
+          <option value="bn-IN,en-IN">Bengali + English</option>
+          <option value="mr-IN,en-IN">Marathi + English</option>
+          <option value="en-IN">English</option>
+          <option value="indic-auto" selected>Detect automatically (recommended)</option>
+        </select>
+      </div>
+      <button id="listen">🎙️ Start listening</button>
+      <div class="row">
+        <label class="filebtn ghost">▶ Play a test call<input type="file" id="file" accept="audio/*"></label>
+        <button class="ghost" id="replay" disabled>🔊 Repeat warning</button>
+      </div>
+      <button class="ghost" id="reset">New call</button>
+      <div id="activity"></div>
+    </div>
+  </section>
+
+  <section class="right">
+    <div class="card">
+      <h2>Why we're worried</h2>
+      <div id="reasons"><div class="empty">Red flags will appear here as the call goes on.</div></div>
+      <div id="evon"></div>
+    </div>
+    <div class="card">
+      <h2>Live transcript</h2>
+      <div id="transcript"><div class="empty">Nothing yet.</div></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  Lost money or got a suspicious call? Call the National Cyber Crime Helpline <b>1930</b> or report at cybercrime.gov.in.
+  Audio is streamed for transcription only and is not stored by this app.
+</footer>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const COPY = {
+  idle:    ["Not listening", 'फ़ोन स्पीकर पर रखें और "Start" दबाएँ', "✓"],
+  safe:    ["Looks safe", "कॉल सामान्य लग रही है", "✓"],
+  caution: ["Be careful", "ध्यान दीजिए — OTP / PIN मत बताइए", "!"],
+  danger:  ["Likely a scam", "धोखाधड़ी! कॉल काट दीजिए", "✕"],
+};
+
+let ws = null, audioCtx = null, micStream = null, workletNode = null, fileTimer = null;
+let fileSource = null, fileGain = null, mode = null, lastAlert = null, lastLevel = "idle";
+const ttsCache = new Map();
+
+/* ---------------------------------------------------------------- UI helpers */
+function toast(msg, ms = 4500) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", ms); }
+function setLevel(level, score) {
+  lastLevel = level;
+  const [en, hi, icon] = COPY[level];
+  $("status").className = "card " + (level === "idle" ? "safe" : level);
+  $("verdict").textContent = en; $("verdictHi").textContent = hi;
+  $("orb").textContent = score != null && level !== "idle" ? score : icon;
+}
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+function addLine(msg) {
+  const box = $("transcript");
+  if (box.querySelector(".empty")) box.innerHTML = "";
+  let html = escapeHtml(msg.text);
+  for (const h of msg.hits || []) {
+    const re = new RegExp(h.phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    html = html.replace(re, m => `<mark>${m}</mark>`);
+  }
+  const div = document.createElement("div");
+  div.className = "line" + ((msg.hits || []).length ? " flagged" : "");
+  div.innerHTML = `<div class="meta">${msg.t}s${msg.lang ? " · " + msg.lang : ""}${msg.latency_ms ? " · " + msg.latency_ms + " ms" : ""}</div>${html}`;
+  box.appendChild(div); box.scrollTop = box.scrollHeight;
+}
+function renderRisk(r) {
+  setLevel(r.level, r.score);
+  $("scamtype").innerHTML = r.level !== "safe" && r.scam_type_en ? `<b>${escapeHtml(r.scam_type_en)}</b> · ${escapeHtml(r.scam_type_hi || "")}` : "";
+  $("metric").textContent = r.danger_after_s != null ? `Flagged ${r.danger_after_s}s into the call` : "";
+  const box = $("reasons");
+  box.innerHTML = r.reasons.length ? "" : '<div class="empty">No red flags so far.</div>';
+  for (const x of r.reasons) {
+    const el = document.createElement("div"); el.className = "reason";
+    el.innerHTML = `<div class="w">+${x.weight}</div><div><div class="t">${escapeHtml(x.en)}</div><div class="hi">${escapeHtml(x.hi)}</div>` +
+      x.phrases.map(p => `<span class="chip">“${escapeHtml(p)}”</span>`).join("") + "</div>";
+    box.appendChild(el);
+  }
+  const ev = $("evon");
+  if (r.evon) { ev.style.display = "block"; ev.innerHTML = `<b>Evon says</b> · risk ${r.evon.risk} · ${escapeHtml(r.evon.scam_type || "")}<br>${escapeHtml(r.evon.reason || "")}`; }
+}
+
+/* ---------------------------------------------------------------- spoken warnings */
+async function getWarning(body) {
+  const key = JSON.stringify(body);
+  if (!ttsCache.has(key)) {
+    ttsCache.set(key, fetch("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: key })
+      .then(r => r.ok ? r.arrayBuffer() : r.text().then(t => Promise.reject(new Error(t)))));
+  }
+  return ttsCache.get(key);
+}
+async function speak(body) {
+  try {
+    const buf = await getWarning(body);
+    const audio = await audioCtx.decodeAudioData(buf.slice(0));
+    if (fileGain) fileGain.gain.setTargetAtTime(0.12, audioCtx.currentTime, 0.1);   // duck the test call
+    const src = audioCtx.createBufferSource(); src.buffer = audio; src.connect(audioCtx.destination); src.start();
+    return new Promise(res => src.onended = () => { if (fileGain) fileGain.gain.setTargetAtTime(1, audioCtx.currentTime, 0.2); res(); });
+  } catch (e) { ttsCache.delete(JSON.stringify(body)); toast("Couldn't play warning: " + e.message); }
+}
+async function onAlert(a) {
+  lastAlert = a; $("replay").disabled = false;
+  await speak({ lang: a.lang, level: a.level });
+  if (a.reason && a.level === "danger") await speak({ lang: a.lang, text: a.reason });
+}
+
+/* ---------------------------------------------------------------- server socket */
+function openSocket() {
+  return new Promise((resolve, reject) => {
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { ws.send(JSON.stringify({ type: "start", language: $("lang").value })); resolve(); };
+    ws.onerror = () => reject(new Error("Can't reach the Kavach server"));
+    ws.onclose = () => { if (mode) stopAll("Connection closed"); };
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.type === "status" && m.state === "listening") { $("activity").innerHTML = '<span class="dot live"></span>Listening…'; if (lastLevel === "idle") setLevel("safe"); }
+      else if (m.type === "status" && m.state === "reconnecting") $("activity").textContent = "Reconnecting…";
+      else if (m.type === "speech_start") $("activity").innerHTML = '<span class="dot live"></span>Hearing speech…';
+      else if (m.type === "processing") $("activity").innerHTML = '<span class="dot"></span>Transcribing…';
+      else if (m.type === "transcript") addLine(m);
+      else if (m.type === "risk") renderRisk(m);
+      else if (m.type === "alert") onAlert(m);
+      else if (m.type === "notice") { toast(m.message, 6000); }
+      else if (m.type === "error") { toast(m.message, 10000); }
+    };
+  });
+}
+
+/* ---------------------------------------------------------------- mic capture → 16 kHz PCM */
+const WORKLET = `
+class PCM16 extends AudioWorkletProcessor {
+  constructor() { super(); this.ratio = sampleRate / 16000; this.pos = 0; this.acc = 0; this.cnt = 0; this.out = new Int16Array(512); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0]; if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) {
+      this.acc += ch[i]; this.cnt++; this.pos += 1;
+      if (this.pos >= this.ratio) {           // box-filter downsample to 16 kHz
+        this.pos -= this.ratio;
+        const v = Math.max(-1, Math.min(1, this.acc / this.cnt)); this.acc = 0; this.cnt = 0;
+        this.out[this.n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
+        if (this.n === 512) { this.port.postMessage(this.out.buffer, [this.out.buffer]); this.out = new Int16Array(512); this.n = 0; }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("pcm16", PCM16);`;
+
+async function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new AudioContext();
+    await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
+  }
+  await audioCtx.resume();
+}
+function prefetchWarnings() {
+  const lang = $("lang").value.slice(0, 2);
+  const l = lang === "in" ? "hi" : lang;
+  getWarning({ lang: l, level: "danger" }).catch(() => {}); getWarning({ lang: l, level: "caution" }).catch(() => {});
+}
+
+async function startMic() {
+  await ensureAudio();
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
+  await openSocket();
+  const src = audioCtx.createMediaStreamSource(micStream);
+  workletNode = new AudioWorkletNode(audioCtx, "pcm16");
+  workletNode.port.onmessage = (e) => { if (ws && ws.readyState === 1) ws.send(e.data); };
+  src.connect(workletNode);
+  mode = "mic"; prefetchWarnings();
+  $("listen").classList.add("on"); $("listen").textContent = "■ Stop listening";
+}
+
+/* ---------------------------------------------------------------- test call from a file */
+async function playFile(file) {
+  if (mode) stopAll();
+  await ensureAudio();
+  const decoded = await audioCtx.decodeAudioData(await file.arrayBuffer());
+  // Resample to 16 kHz mono for Prisma
+  const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const s = off.createBufferSource(); s.buffer = decoded; s.connect(off.destination); s.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+
+  await openSocket();
+  mode = "file"; prefetchWarnings();
+  $("listen").classList.add("on"); $("listen").textContent = "■ Stop test call";
+
+  // Play it out loud so the demo audience hears the call
+  fileGain = audioCtx.createGain(); fileGain.connect(audioCtx.destination);
+  fileSource = audioCtx.createBufferSource(); fileSource.buffer = decoded; fileSource.connect(fileGain); fileSource.start();
+
+  // Stream 512-sample frames at real-time cadence (32 ms), plus 1.5 s of trailing silence
+  const total = pcm.length + 24000, t0 = performance.now(); let sent = 0;
+  fileTimer = setInterval(() => {
+    const due = Math.min(total, Math.floor((performance.now() - t0) / 1000 * 16000 / 512) * 512);
+    while (sent + 512 <= due) {
+      const frame = new Int16Array(512);
+      for (let i = 0; i < 512; i++) { const v = sent + i < pcm.length ? Math.max(-1, Math.min(1, pcm[sent + i])) : 0; frame[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+      if (ws && ws.readyState === 1) ws.send(frame.buffer);
+      sent += 512;
+    }
+    if (sent + 512 > total) {
+      clearInterval(fileTimer); fileTimer = null;
+      $("activity").textContent = "Test call finished, waiting for the last sentence…";
+      // Give Prisma a few seconds for the final transcript, then end the session so the
+      // button goes back to "Start listening" (results stay on screen).
+      setTimeout(() => { if (mode === "file" && !fileTimer) stopAll("Test call finished."); }, 4000);
+    }
+  }, 32);
+}
+
+/* ---------------------------------------------------------------- stop / reset */
+function stopAll(reason) {
+  const wasMode = mode; mode = null;
+  if (fileTimer) { clearInterval(fileTimer); fileTimer = null; }
+  if (fileSource) { try { fileSource.stop(); } catch {} fileSource = null; fileGain = null; }
+  if (workletNode) { workletNode.disconnect(); workletNode = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (ws) { try { ws.send(JSON.stringify({ type: "stop" })); ws.close(); } catch {} ws = null; }
+  $("listen").classList.remove("on"); $("listen").textContent = "🎙️ Start listening";
+  $("activity").textContent = reason && wasMode ? reason : "";
+}
+function resetCall() {
+  stopAll(); setLevel("idle"); lastAlert = null; $("replay").disabled = true;
+  $("transcript").innerHTML = '<div class="empty">Nothing yet.</div>';
+  $("reasons").innerHTML = '<div class="empty">Red flags will appear here as the call goes on.</div>';
+  $("evon").style.display = "none"; $("scamtype").textContent = ""; $("metric").textContent = "";
+}
+
+$("listen").onclick = async () => {
+  if (mode) return stopAll();
+  try { resetCall(); await startMic(); } catch (e) { stopAll(); toast(e.message || String(e)); }
+};
+$("file").onchange = async (e) => {
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  try { resetCall(); await playFile(f); } catch (err) { stopAll(); toast(err.message || String(err)); }
+};
+$("replay").onclick = () => lastAlert && onAlert(lastAlert);
+$("reset").onclick = resetCall;
+
+fetch("/api/config").then(r => r.json()).then(c => {
+  $("badge").textContent = `${c.stt_model} · Timbre${c.evon ? " · Evon" : ""}${c.context ? "" : " · no keyterms"}`;
+  if (!c.has_key) toast("Add your GNANI_API_KEY to the .env file and restart the server.", 10000);
+});
+</script>
+</body>
+</html>
