@@ -5,6 +5,7 @@ Kavach experiment: does Prisma's context (keyterms + topic) help on noisy phone 
     .venv/bin/python eval_calls.py --dirs demo_calls demo_calls_noisy
     .venv/bin/python eval_calls.py --only scam_kyc_anydesk_hinglish --configs with_context
     .venv/bin/python eval_calls.py --dirs recordings --configs with_context   # replay saved mic tests
+    .venv/bin/python eval_calls.py --via-server --rounds 3   # through the running server, like the page
 
 Each demo call (8 kHz WAV) is streamed to Gnani Prisma v3.0 at real-time speed, once WITH keyterms
 and topic and once WITHOUT, using the same VAD settings as the app. Every transcript goes through the
@@ -26,6 +27,7 @@ import json
 import re
 import time
 import wave
+from array import array
 from pathlib import Path
 
 import websockets
@@ -165,6 +167,114 @@ async def run_call(path: Path, language: str, with_context: bool) -> dict:
     }
 
 
+def to_16k(pcm: bytes, rate: int) -> bytes:
+    """The page always sends 16 kHz. Upsample 8 kHz demo calls by linear interpolation."""
+    if rate == 16000:
+        return pcm
+    a = array("h", pcm)
+    out = array("h", bytes(len(a) * 4))
+    for i, v in enumerate(a):
+        out[2 * i] = v
+        out[2 * i + 1] = (v + a[i + 1]) // 2 if i + 1 < len(a) else v
+    return out.tobytes()
+
+
+async def run_call_via_server(path: Path, language: str, url: str) -> dict:
+    """
+    Stream one call through the running Kavach server exactly like the page does (16 kHz, 1024-byte
+    frames, real time, 1.5 s trailing silence) and record what the server sends back, including
+    stalls: the server pings every 5 s, so any gap over 7 s between messages is a stall.
+    """
+    with wave.open(str(path), "rb") as w:
+        rate = w.getframerate()
+        pcm = to_16k(w.readframes(w.getnframes()), rate)
+    pcm += bytes(16000 * 2 * 3 // 2)  # 1.5 s of silence, as the page sends
+    frames = [pcm[i:i + 1024].ljust(1024, b"\0") for i in range(0, len(pcm), 1024)]
+
+    msgs: list[tuple[float, dict]] = []
+    t0 = time.monotonic()
+    error = None
+    try:
+        async with websockets.connect(url, max_size=None) as ws:
+            await ws.send(json.dumps({"type": "start", "language": language}))
+
+            async def send():
+                start = time.monotonic()
+                for i, f in enumerate(frames):
+                    await ws.send(f)
+                    delay = start + (i + 1) * 0.032 - time.monotonic()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                await asyncio.sleep(4)  # the page waits 4 s for the last sentence, then stops
+                await ws.send(json.dumps({"type": "stop"}))
+
+            async def receive():
+                async for raw in ws:
+                    msgs.append((time.monotonic() - t0, json.loads(raw)))
+
+            sender = asyncio.create_task(send())
+            receiver = asyncio.create_task(receive())
+            await sender
+            try:
+                await asyncio.wait_for(receiver, timeout=3)
+            except asyncio.TimeoutError:
+                receiver.cancel()
+    except Exception as e:
+        error = repr(e)
+
+    of = lambda kind: [m for _, m in msgs if m.get("type") == kind]
+    times = [0.0] + [t for t, _ in msgs]
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    risks = of("risk")
+    level = risks[-1]["level"] if risks else "safe"
+    danger = next((m["danger_after_s"] for m in risks if m.get("danger_after_s") is not None), None)
+    problems = [m.get("message") or m.get("reason") for m in of("error") + of("ended")]
+    reconnects = sum(1 for m in of("status") if m.get("state") == "reconnecting")
+    return {
+        "call": path.stem, "folder": path.parent.name, "level": level,
+        "score": risks[-1]["score"] if risks else 0, "danger_s": danger,
+        "transcripts": len(of("transcript")), "pings": len(of("ping")),
+        "max_gap_s": round(max(gaps), 1) if gaps else None, "reconnects": reconnects,
+        "problems": problems, "error": error,
+    }
+
+
+async def main_via_server(args) -> None:
+    files = []
+    for d in args.dirs:
+        files += sorted(p for p in (HERE / d).glob("*.wav") if not args.only or p.stem in args.only)
+    if not files:
+        raise SystemExit("No WAV files found.")
+    rows = ["| Round | Call | Audio | Verdict | Danger at | Transcripts | Longest silence from server | Reconnects | Problems |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    results = []
+    for rnd in range(1, args.rounds + 1):
+        for path in files:
+            print(f"[round {rnd}/{args.rounds}] {path.parent.name}/{path.name} ...", flush=True)
+            r = await run_call_via_server(path, args.language, args.via_server)
+            r["round"] = rnd
+            r["ok"] = verdict_ok(r) and not r["error"] and not r["problems"] and (r["max_gap_s"] or 99) <= 7
+            results.append(r)
+            print(f"         {r['level']} {r['score']}, danger at {r['danger_s']}, {r['transcripts']} transcripts, "
+                  f"longest gap {r['max_gap_s']}s, reconnects {r['reconnects']}, problems {r['problems']}, "
+                  f"error {r['error']} -> {'OK' if r['ok'] else 'FAIL'}", flush=True)
+            mark = "" if r["ok"] else " ✗"
+            rows.append(f"| {rnd} | {r['call']} | {r['folder']} | {r['level']} {r['score']}{mark} | "
+                        f"{r['danger_s'] if r['danger_s'] is not None else 'never'} | {r['transcripts']} | "
+                        f"{r['max_gap_s']} s | {r['reconnects']} | {'; '.join(map(str, r['problems'])) or r['error'] or ''} |")
+    ok = sum(r["ok"] for r in results)
+    summary_line = f"**{ok}/{len(results)} runs correct with no stalls** ({args.rounds} rounds, through {args.via_server})"
+    md = "\n".join(rows)
+    print("\n" + md + "\n\n" + summary_line)
+    (HERE / "eval_server_results.md").write_text(
+        f"# Kavach reliability run (through the server)\n\nLanguage setting: `{args.language}`. Each call is "
+        "streamed to the running server like the page does. A stall = more than 7 s with no message from "
+        f"the server (it pings every 5 s).\n\n{md}\n\n{summary_line}\n", encoding="utf-8")
+    print("\nSaved eval_server_results.md")
+    if ok != len(results):
+        raise SystemExit(1)
+
+
 def verdict_ok(r: dict) -> bool:
     return r["level"] == "safe" if r["call"].startswith("normal") else r["level"] != "safe"
 
@@ -212,7 +322,12 @@ async def main():
                     choices=["with_context", "no_context"])
     ap.add_argument("--only", nargs="*", help="only these call names")
     ap.add_argument("--language", default="indic-auto")
+    ap.add_argument("--via-server", metavar="WS_URL", nargs="?", const="ws://localhost:8000/ws",
+                    help="stream through the running Kavach server instead of straight to Gnani")
+    ap.add_argument("--rounds", type=int, default=1, help="with --via-server: run every call this many times")
     args = ap.parse_args()
+    if args.via_server:
+        return await main_via_server(args)
     if not API_KEY:
         raise SystemExit("GNANI_API_KEY is empty in .env")
 

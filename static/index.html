@@ -82,6 +82,12 @@
   .line { overflow-wrap: anywhere; }
   .line mark { background: var(--danger); color: #fff; padding: 0 4px; border-radius: 6px; }
   #activity { font-size: 14px; color: var(--muted); min-height: 20px; margin-top: 8px; }
+  #activity.warn { color: var(--caution); font-weight: 600; }
+  /* shown when the browser blocks sound (Safari): one tap turns it on */
+  #soundBtn { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); z-index: 10; max-width: 92vw;
+    background: var(--danger); color: #fff; font-size: 24px; padding: 20px 28px; border-radius: 18px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.3); }
+  #soundBtn[hidden] { display: none; }
   /* live audio bars: show that sound is actually reaching Kavach */
   .viz { display: flex; align-items: center; justify-content: center; gap: 3px; height: 52px; margin-top: 10px; opacity: 0; transition: opacity .3s; }
   .viz.on { opacity: 1; }
@@ -188,6 +194,7 @@
   Audio is streamed for transcription only and is not stored by this app.
 </footer>
 <div id="toast"></div>
+<button id="soundBtn" hidden>🔊 Tap to turn on sound</button>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -207,9 +214,23 @@ let speaking = 0, micResumeAt = 0;
 const micPaused = () => false;
 let fileSource = null, fileGain = null, mode = null, lastAlert = null, lastLevel = "idle";
 const ttsCache = new Map();
+// Every stop / new call bumps callGen. Sockets, timers and mic callbacks remember the generation
+// they belong to and do nothing once it is old, so nothing from a previous call leaks into the next.
+// (Before this, each old mic processor kept sending silent frames into the new call's socket:
+// by the third call Gnani got speech chopped with 2-3x as much silence and transcribed nothing.)
+let callGen = 0, voiceGen = 0;
+let micSource = null, fileEl = null, finishTimer = null, watchTimer = null, reconnectTimer = null;
+let reconnectTries = 0, lastPing = 0, lastWords = 0, pendingFrames = [];
+let callLines = [], callLangs = {}, alertedLevel = null, dangerAfter = null;
+const activeVoices = new Set();     // warnings playing right now (Web Audio sources or <audio> elements)
+const prefetched = new Set();
+const stale = () => Object.assign(new Error("superseded by a newer call"), { stale: true });
 
 /* ---------------------------------------------------------------- UI helpers */
 function toast(msg, ms = 4500) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", ms); }
+function setStatus(html, warn = false) { const a = $("activity"); a.innerHTML = html; a.className = warn ? "warn" : ""; }
+// Problems go in both places: a toast that catches the eye, and the status line that stays.
+function tellUser(msg, ms = 10000) { toast(msg, ms); setStatus("⚠️ " + escapeHtml(msg), true); }
 function setLevel(level, score) {
   lastLevel = level;
   const [en, hi, icon] = COPY[level];
@@ -294,9 +315,12 @@ function feedViz(rms) {                       // rms of the audio being sent, 0.
 }
 function updateVizText() {
   const secs = Math.floor(sentSamples / 16000), t = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-  const quiet = performance.now() - lastSound > 4000;
-  $("vizText").textContent = quiet ? `No sound reaching Kavach for a few seconds · ${t}` : `Audio reaching Kavach · ${t}`;
-  $("vizText").className = quiet ? "vizText warn" : "vizText";
+  const now = performance.now(), quiet = now - lastSound > 4000;
+  // Sound is arriving but no words for 20 s: the phone is probably too far or too faint.
+  const noWords = !quiet && ws && now - lastWords > 20000;
+  $("vizText").textContent = quiet ? `No sound reaching Kavach for a few seconds · ${t}`
+    : noWords ? `Not hearing words clearly. Move the phone closer. · ${t}` : `Audio reaching Kavach · ${t}`;
+  $("vizText").className = quiet || noWords ? "vizText warn" : "vizText";
 }
 function startViz() {
   vizHist.fill(0); sentSamples = 0; lastSound = performance.now(); callStart = performance.now();
@@ -322,58 +346,206 @@ function showLevel({ level, gain }) {
   else if (performance.now() - loudSince > 1500) { bar.style.background = "var(--muted)"; txt.textContent = "Quiet"; }
 }
 
+/* ---------------------------------------------------------------- sound that always plays */
+// Safari and Chrome can keep the audio engine "suspended" until the user taps. Before every playback:
+// resume it; if that fails, play through an <audio> element; if sound is still blocked, show a big
+// "Tap to turn on sound" button that plays it on the tap.
+let soundRetries = [];
+function soundBlocked(retry) { if (retry) soundRetries.push(retry); $("soundBtn").hidden = false; }
+$("soundBtn").onclick = () => {
+  unlockAudio();  // inside the tap, which is what browsers require
+  $("soundBtn").hidden = true;
+  const todo = soundRetries; soundRetries = [];
+  todo.forEach(f => { try { f(); } catch (e) { console.warn(e); } });
+};
+async function audioReady() {
+  if (!audioCtx) return false;
+  if (audioCtx.state !== "running") {
+    try { await Promise.race([audioCtx.resume(), new Promise(r => setTimeout(r, 800))]); } catch {}
+  }
+  return audioCtx.state === "running";
+}
+function playElement(blob) {
+  const url = URL.createObjectURL(blob), el = new Audio(url);
+  activeVoices.add(el);
+  const done = () => { activeVoices.delete(el); URL.revokeObjectURL(url); };
+  return el.play()
+    .then(() => new Promise(res => { el.onended = el.onerror = el.onpause = res; }))
+    .then(() => { done(); return true; })
+    .catch(() => { done(); soundBlocked(() => playElement(blob)); return false; });
+}
+async function playClip(buf, gen) {
+  if (await audioReady()) {
+    try {
+      const audio = await audioCtx.decodeAudioData(buf.slice(0));
+      if (gen !== voiceGen) return false;
+      const src = audioCtx.createBufferSource(); src.buffer = audio; src.connect(audioCtx.destination);
+      activeVoices.add(src); src.start();
+      // onended can fail to fire if the engine is suspended mid-play: never wait forever
+      await new Promise(res => { src.onended = res; setTimeout(res, audio.duration * 1000 + 1500); });
+      activeVoices.delete(src);
+      return true;
+    } catch (e) { console.warn("Web Audio couldn't play the warning, using <audio> instead", e); }
+  }
+  if (gen !== voiceGen) return false;
+  return playElement(new Blob([buf], { type: "audio/wav" }));
+}
+function duck(on) {  // turn the test call down while Kavach speaks
+  if (fileGain && audioCtx) fileGain.gain.setTargetAtTime(on ? 0.12 : 1, audioCtx.currentTime, on ? 0.1 : 0.2);
+  if (fileEl) fileEl.volume = on ? 0.15 : 1;
+}
+
 /* ---------------------------------------------------------------- spoken warnings */
-async function getWarning(body) {
+// Order of fallbacks: Gnani Timbre (the server already retries and falls back to the English
+// warning) -> one more try from the page -> the browser's built-in voice. The red screen is shown
+// before any of this starts and never waits for it.
+function getWarning(body) {
   const key = JSON.stringify(body);
   if (!ttsCache.has(key)) {
-    ttsCache.set(key, fetch("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: key })
-      .then(r => r.ok ? r.arrayBuffer() : r.text().then(t => Promise.reject(new Error(t)))));
+    const p = fetch("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: key })
+      .then(r => r.ok ? r.arrayBuffer() : r.text().then(t => Promise.reject(new Error(t))));
+    p.catch(() => ttsCache.delete(key));  // a failure is not cached: the next try asks again
+    ttsCache.set(key, p);
   }
   return ttsCache.get(key);
 }
-async function speak(body) {
-  try {
-    const buf = await getWarning(body);
-    const audio = await audioCtx.decodeAudioData(buf.slice(0));
-    if (fileGain) fileGain.gain.setTargetAtTime(0.12, audioCtx.currentTime, 0.1);   // duck the test call
-    const src = audioCtx.createBufferSource(); src.buffer = audio; src.connect(audioCtx.destination);
-    speaking++; src.start();
-    return new Promise(res => src.onended = () => {
-      speaking = Math.max(0, speaking - 1); micResumeAt = performance.now() + 800;  // room echo dies down
-      if (fileGain) fileGain.gain.setTargetAtTime(1, audioCtx.currentTime, 0.2); res();
-    });
-  } catch (e) { ttsCache.delete(JSON.stringify(body)); toast("Couldn't play warning: " + e.message); }
+function prefetchWarnings(lang) {
+  const l = (lang || $("lang").value.slice(0, 2)).replace(/^in$/, "hi");
+  if (prefetched.has(l)) return;
+  prefetched.add(l);
+  for (const level of ["danger", "caution"]) getWarning({ lang: l, level }).catch(() => prefetched.delete(l));
 }
-async function onAlert(a) {
-  lastAlert = a; $("replay").disabled = false;
+function speakBrowser(text, textEn, lang) {
+  return new Promise(res => {
+    if (!("speechSynthesis" in window) || !(text || textEn)) return res(false);
+    const native = speechSynthesis.getVoices().find(v => (v.lang || "").toLowerCase().startsWith(lang));
+    const u = new SpeechSynthesisUtterance(native || !textEn ? text : textEn);
+    if (native) u.voice = native;
+    u.lang = native ? native.lang : textEn ? "en-IN" : lang + "-IN"; u.rate = 0.95;
+    u.onend = () => res(true); u.onerror = () => res(false);
+    setTimeout(() => res(true), 25000);
+    speechSynthesis.speak(u);
+  });
+}
+async function speak(body, words = {}) {
+  const gen = voiceGen;
+  speaking++; duck(true);
+  try {
+    let buf = null;
+    try { buf = await getWarning(body); }
+    catch (e) { console.warn("Spoken warning failed, trying once more", e); buf = await getWarning(body).catch(() => null); }
+    if (gen !== voiceGen) return;
+    if (buf) { await playClip(buf, gen); return; }
+    console.warn("Gnani voice unavailable: using the browser's voice");
+    await speakBrowser(words.text, words.text_en, body.lang);
+  } catch (e) {
+    console.error("Couldn't speak the warning", e);
+  } finally {
+    speaking = Math.max(0, speaking - 1); micResumeAt = performance.now() + 800;  // room echo dies down
+    duck(false);
+  }
+}
+function stopVoices() {
+  voiceGen++;
+  for (const v of activeVoices) { try { v.stop ? v.stop() : v.pause(); } catch {} }
+  activeVoices.clear(); soundRetries = []; $("soundBtn").hidden = true;
+  try { speechSynthesis.cancel(); } catch {}
+}
+function onAlert(a) {
+  lastAlert = a; alertedLevel = a.level; $("replay").disabled = false;
+  if (a.level === "danger" || lastLevel !== "danger") setLevel(a.level);  // red screen first, sound after
   addNote(callSeconds(), a.level === "danger" ? "🔊 Kavach warned out loud: likely a scam, cut the call"
                                               : "🔊 Kavach warned out loud: be careful, don't share OTP / PIN", "kavach");
-  await speak({ lang: a.lang, level: a.level });
-  if (a.reason && a.level === "danger") await speak({ lang: a.lang, text: a.reason });
+  speak({ lang: a.lang, level: a.level }, { text: a.text, text_en: a.text_en }).then(() => {
+    if (a.reason && a.level === "danger") return speak({ lang: a.lang, text: a.reason }, { text: a.reason });
+  });
 }
 
 /* ---------------------------------------------------------------- server socket */
-function openSocket() {
+// The socket reconnects by itself if it drops mid-call: the mic keeps running, up to 5 s of audio
+// is held and sent on reconnect, and the page sends what it already has (transcript, alerts given)
+// so the server carries on with the same risk score.
+const PAGE_BACKOFF_MS = [500, 1000, 2000, 3000, 5000, 5000];
+const wsUrl = () => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+function openSocket(resume = false) {
+  const gen = callGen;
   return new Promise((resolve, reject) => {
-    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-    ws.binaryType = "arraybuffer";
-    ws.onopen = () => { ws.send(JSON.stringify({ type: "start", language: $("lang").value })); resolve(); };
-    ws.onerror = () => reject(new Error("Can't reach the Kavach server"));
-    ws.onclose = () => { if (mode) stopAll("Connection closed"); };
-    ws.onmessage = (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.type === "status" && m.state === "listening") { $("activity").innerHTML = '<span class="dot live"></span>Listening…'; if (lastLevel === "idle") setLevel("safe"); }
-      else if (m.type === "status" && m.state === "reconnecting") $("activity").textContent = "Reconnecting…";
-      else if (m.type === "speech_start") $("activity").innerHTML = '<span class="dot live"></span>Hearing speech…';
-      else if (m.type === "processing") $("activity").innerHTML = '<span class="dot"></span>Transcribing…';
-      else if (m.type === "transcript") { addLine(m); noteLanguage(m.lang); }
-      else if (m.type === "unclear") addNote(m.t, "… couldn't make out this part", "unclear");
-      else if (m.type === "risk") renderRisk(m);
-      else if (m.type === "alert") onAlert(m);
-      else if (m.type === "notice") { toast(m.message, 6000); }
-      else if (m.type === "error") { toast(m.message, 10000); }
+    let sock, opened = false;
+    try { sock = new WebSocket(wsUrl()); } catch (e) { return reject(e); }
+    sock.binaryType = "arraybuffer";
+    sock.onopen = () => {
+      if (gen !== callGen) { try { sock.close(); } catch {} return reject(stale()); }
+      opened = true; ws = sock; lastPing = performance.now();
+      const start = { type: "start", language: $("lang").value };
+      if (resume) start.resume = { lines: callLines, langs: callLangs, alerted: alertedLevel,
+                                   elapsed: callSeconds(), danger_after: dangerAfter };
+      sock.send(JSON.stringify(start));
+      while (pendingFrames.length) sock.send(pendingFrames.shift());  // audio captured while away
+      resolve();
     };
+    sock.onerror = () => { if (!opened) reject(new Error("Can't reach the Kavach server. Is it running?")); };
+    sock.onclose = (ev) => {
+      if (!opened) return reject(new Error("Can't reach the Kavach server. Is it running?"));
+      if (gen !== callGen || sock !== ws) return;
+      ws = null;
+      if (mode) connectionLost(`connection closed (code ${ev.code}${ev.reason ? ", " + ev.reason : ""})`);
+    };
+    sock.onmessage = (ev) => { if (gen === callGen && sock === ws) onServerMessage(ev); };
   });
+}
+function connectionLost(why) {
+  if (!mode || reconnectTimer) return;
+  if (ws) { const old = ws; ws = null; old.onclose = old.onmessage = null; try { old.close(); } catch {} }
+  console.warn("Kavach:", why);
+  if (reconnectTries >= PAGE_BACKOFF_MS.length) {
+    const msg = "Kavach lost its connection to the server and could not reconnect. Check that the server is running, then press Start.";
+    stopAll(); tellUser(msg, 15000); return;
+  }
+  const delay = PAGE_BACKOFF_MS[reconnectTries++], gen = callGen;
+  setStatus("⚠️ Kavach lost connection, reconnecting…", true);
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    if (gen !== callGen || !mode) return;
+    try { await openSocket(true); setStatus("Reconnected, starting the speech service…"); }
+    catch (e) { if (gen === callGen && !e.stale) connectionLost(e.message); }
+  }, delay);
+}
+function watchCall() {  // runs every second during a call
+  if (mode && ws && ws.readyState === 1 && performance.now() - lastPing > 12000) {
+    connectionLost("no heartbeat from the server for 12 s");
+  }
+}
+function sendFrame(buf) {
+  sentSamples += 512;
+  if (ws && ws.readyState === 1) { ws.send(buf); return; }
+  pendingFrames.push(buf);
+  if (pendingFrames.length > 160) pendingFrames.shift();  // hold at most the last ~5 s
+}
+function onServerMessage(ev) {
+  let m;
+  try { m = JSON.parse(ev.data); } catch { return console.warn("Ignored a bad message from the server"); }
+  lastPing = performance.now();  // any message proves the connection is alive
+  try {
+    if (m.type === "ping") return;
+    if (m.type === "status" && m.state === "listening") {
+      reconnectTries = 0; setStatus('<span class="dot live"></span>Listening…');
+      if (lastLevel === "idle") setLevel("safe");
+    }
+    else if (m.type === "status" && m.state === "reconnecting")
+      setStatus(`⚠️ Speech service dropped, reconnecting… (try ${m.attempt || 1} of ${m.of || 5})`, true);
+    else if (m.type === "speech_start") setStatus('<span class="dot live"></span>Hearing speech…');
+    else if (m.type === "processing") setStatus('<span class="dot"></span>Transcribing…');
+    else if (m.type === "transcript") {
+      addLine(m); noteLanguage(m.lang); callLines.push(m.text); lastWords = performance.now();
+      if (m.lang) { callLangs[m.lang] = (callLangs[m.lang] || 0) + 1; if (m.lang !== "en") prefetchWarnings(m.lang); }
+    }
+    else if (m.type === "unclear") { addNote(m.t, "… couldn't make out this part", "unclear"); lastWords = performance.now(); }
+    else if (m.type === "risk") { renderRisk(m); dangerAfter = m.danger_after_s; }
+    else if (m.type === "alert") onAlert(m);
+    else if (m.type === "notice") toast(m.message, 6000);
+    else if (m.type === "error") tellUser(m.message);
+    else if (m.type === "ended") { const why = m.reason || "Session ended"; stopAll(); tellUser(why, 15000); }
+  } catch (e) { console.error("Couldn't handle a", m.type, "message", e); }
 }
 
 /* ---------------------------------------------------------------- mic capture → 16 kHz PCM */
@@ -385,8 +557,10 @@ class PCM16 extends AudioWorkletProcessor {
   constructor() {
     super(); this.ratio = sampleRate / 16000; this.pos = 0; this.acc = 0; this.cnt = 0;
     this.out = new Int16Array(512); this.n = 0; this.sq = 0; this.blocks = 0;
+    this.alive = true; this.port.onmessage = (e) => { if (e.data === "stop") this.alive = false; };
   }
   process(inputs) {
+    if (!this.alive) return false;  // stopped: let the browser drop this processor
     const ch = inputs[0] && inputs[0][0]; if (!ch) return true;
     for (let i = 0; i < ch.length; i++) {
       this.acc += ch[i]; this.cnt++; this.pos += 1;
@@ -406,58 +580,101 @@ class PCM16 extends AudioWorkletProcessor {
 }
 registerProcessor("pcm16", PCM16);`;
 
-async function ensureAudio() {
-  if (!audioCtx) {
-    audioCtx = new AudioContext();
-    await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
-  }
-  await audioCtx.resume();
+// Safari only lets a page play sound if the audio engine is started *during* a click. Picking a
+// test-call file starts it too late (after the file dialog), so Safari kept it silent. Unlock it on
+// the first click or key press anywhere on the page, before any await.
+let workletReady = null;
+function unlockAudio() {
+  if (!audioCtx) { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); audioCtx.onstatechange = onAudioState; }
+  if (audioCtx.state !== "running") audioCtx.resume().catch(() => {});
+  try {  // a one-sample silent sound played inside the gesture fully unlocks Safari
+    const b = audioCtx.createBuffer(1, 1, 22050), src = audioCtx.createBufferSource();
+    src.buffer = b; src.connect(audioCtx.destination); src.start();
+  } catch {}
 }
-function prefetchWarnings() {
-  const lang = $("lang").value.slice(0, 2);
-  const l = lang === "in" ? "hi" : lang;
-  getWarning({ lang: l, level: "danger" }).catch(() => {}); getWarning({ lang: l, level: "caution" }).catch(() => {});
+document.addEventListener("pointerdown", unlockAudio, true);
+document.addEventListener("keydown", unlockAudio, true);
+
+async function ensureAudio() {
+  unlockAudio();
+  if (!workletReady) {
+    workletReady = audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
+  }
+  await workletReady;
+  if (!(await audioReady())) soundBlocked();  // Safari: one tap on the big button turns sound on
+}
+// Safari can pause the audio engine mid-call (another app took the audio, screen locked). The mic
+// stops feeding Kavach when that happens, so try to resume, and ask for a tap if it won't.
+function onAudioState() {
+  if (!audioCtx || audioCtx.state === "running" || !mode) return;
+  audioCtx.resume().catch(() => {});
+  setTimeout(() => {
+    if (mode && audioCtx.state !== "running") {
+      tellUser("The browser paused Kavach's audio. Tap the red button to continue.");
+      soundBlocked();
+    }
+  }, 1000);
+}
+function beginCall(kind) {
+  mode = kind; lastWords = performance.now(); prefetchWarnings(); startViz();
+  clearInterval(watchTimer); watchTimer = setInterval(watchCall, 1000);
+  $("listen").classList.add("on"); $("listen").textContent = kind === "mic" ? "■ Stop listening" : "■ Stop test call";
 }
 
 async function startMic() {
+  const gen = callGen;
   await ensureAudio();
   // Open the page with ?raw=1 to switch off the browser's echo cancellation / noise suppression,
   // to compare which captures a phone on speaker better in your room.
   const raw = new URLSearchParams(location.search).has("raw");
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: true } });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: true } });
+  if (gen !== callGen) { stream.getTracks().forEach(t => t.stop()); throw stale(); }
+  micStream = stream;
+  micStream.getAudioTracks().forEach(t => t.onended = () => {
+    if (gen === callGen && mode) { stopAll(); tellUser("The microphone was turned off or unplugged. Press Start to listen again."); }
+  });
   await openSocket();
-  const src = audioCtx.createMediaStreamSource(micStream);
-  workletNode = new AudioWorkletNode(audioCtx, "pcm16");
-  workletNode.port.onmessage = (e) => {
+  micSource = audioCtx.createMediaStreamSource(micStream);
+  const node = new AudioWorkletNode(audioCtx, "pcm16");
+  workletNode = node;
+  node.port.onmessage = (e) => {
+    if (gen !== callGen) return;  // a processor from an earlier call must never feed this one
     // Level readings are plain objects; audio is a raw buffer. (Don't use instanceof here: Safari
     // can report buffers from the audio thread as a different ArrayBuffer type.)
     if (e.data && typeof e.data.level === "number") return showLevel(e.data);
-    if (!ws || ws.readyState !== 1) return;
     // Send silence instead of nothing, so Prisma's stream keeps its timing while the warning plays.
-    ws.send(micPaused() ? new Int16Array(512).buffer : e.data); sentSamples += 512;
+    sendFrame(micPaused() ? new Int16Array(512).buffer : e.data);
   };
-  src.connect(workletNode);
-  mode = "mic"; prefetchWarnings(); $("meterWrap").style.display = "block"; startViz();
-  $("listen").classList.add("on"); $("listen").textContent = "■ Stop listening";
+  micSource.connect(node);
+  $("meterWrap").style.display = "block"; beginCall("mic");
 }
 
 /* ---------------------------------------------------------------- test call from a file */
 async function playFile(file) {
   if (mode) stopAll();
+  const gen = callGen;
   await ensureAudio();
   const decoded = await audioCtx.decodeAudioData(await file.arrayBuffer());
   // Resample to 16 kHz mono for Prisma
   const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
   const s = off.createBufferSource(); s.buffer = decoded; s.connect(off.destination); s.start();
   const pcm = (await off.startRendering()).getChannelData(0);
+  if (gen !== callGen) throw stale();
 
   await openSocket();
-  mode = "file"; prefetchWarnings(); startViz();
-  $("listen").classList.add("on"); $("listen").textContent = "■ Stop test call";
+  beginCall("file");
 
-  // Play it out loud so the demo audience hears the call
-  fileGain = audioCtx.createGain(); fileGain.connect(audioCtx.destination);
-  fileSource = audioCtx.createBufferSource(); fileSource.buffer = decoded; fileSource.connect(fileGain); fileSource.start();
+  // Play it out loud so the demo audience hears the call. If the audio engine is blocked (Safari),
+  // play the same file through an <audio> element, and if that is blocked too, ask for one tap.
+  if (await audioReady()) {
+    fileGain = audioCtx.createGain(); fileGain.connect(audioCtx.destination);
+    fileSource = audioCtx.createBufferSource(); fileSource.buffer = decoded; fileSource.connect(fileGain); fileSource.start();
+  } else {
+    fileEl = new Audio(URL.createObjectURL(file));
+    const el = fileEl;
+    el.play().catch(() => soundBlocked(() => { if (fileEl === el) el.play().catch(() => {}); }));
+  }
+  if (gen !== callGen) return;
 
   // Stream 512-sample frames at real-time cadence (32 ms), plus 1.5 s of trailing silence
   const total = pcm.length + 24000, t0 = performance.now(); let sent = 0;
@@ -467,45 +684,67 @@ async function playFile(file) {
     while (sent + 512 <= due) {
       const frame = new Int16Array(512);
       for (let i = 0; i < 512; i++) { const v = sent + i < pcm.length ? Math.max(-1, Math.min(1, pcm[sent + i])) : 0; sq += v * v; frame[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
-      if (ws && ws.readyState === 1) { ws.send(frame.buffer); sentSamples += 512; }
+      sendFrame(frame.buffer);
       sent += 512; n += 512;
     }
     if (n) feedViz(Math.sqrt(sq / n));
     if (sent + 512 > total) {
       clearInterval(fileTimer); fileTimer = null;
-      $("activity").textContent = "Test call finished, waiting for the last sentence…";
+      setStatus("Test call finished, waiting for the last sentence…");
       // Give Prisma a few seconds for the final transcript, then end the session so the
       // button goes back to "Start listening" (results stay on screen).
-      setTimeout(() => { if (mode === "file" && !fileTimer) stopAll("Test call finished."); }, 4000);
+      finishTimer = setTimeout(() => { if (mode === "file" && !fileTimer) stopAll("Test call finished."); }, 4000);
     }
   }, 32);
 }
 
 /* ---------------------------------------------------------------- stop / reset */
+// Stops capture, sockets and timers. A warning that is already being spoken is allowed to finish
+// (it often comes right at the end of a test call); resetCall() silences that too.
 function stopAll(reason) {
-  const wasMode = mode; mode = null; $("meterWrap").style.display = "none"; stopViz();
-  if (fileTimer) { clearInterval(fileTimer); fileTimer = null; }
-  if (fileSource) { try { fileSource.stop(); } catch {} fileSource = null; fileGain = null; }
-  if (workletNode) { workletNode.disconnect(); workletNode = null; }
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-  if (ws) { try { ws.send(JSON.stringify({ type: "stop" })); ws.close(); } catch {} ws = null; }
+  const wasMode = mode; mode = null; callGen++;
+  $("meterWrap").style.display = "none"; stopViz();
+  clearInterval(fileTimer); fileTimer = null;
+  clearTimeout(finishTimer); finishTimer = null;
+  clearInterval(watchTimer); watchTimer = null;
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  reconnectTries = 0; pendingFrames = [];
+  if (fileSource) { try { fileSource.stop(); } catch {} fileSource = null; }
+  fileGain = null;
+  if (fileEl) { try { fileEl.pause(); URL.revokeObjectURL(fileEl.src); } catch {} fileEl = null; }
+  if (workletNode) {
+    workletNode.port.onmessage = null;
+    try { workletNode.port.postMessage("stop"); } catch {}
+    workletNode.disconnect(); workletNode = null;
+  }
+  if (micSource) { try { micSource.disconnect(); } catch {} micSource = null; }
+  if (micStream) { micStream.getTracks().forEach(t => { t.onended = null; t.stop(); }); micStream = null; }
+  if (ws) {
+    const s = ws; ws = null; s.onclose = s.onmessage = s.onerror = null;
+    try { if (s.readyState === 1) s.send(JSON.stringify({ type: "stop" })); s.close(); } catch {}
+  }
   $("listen").classList.remove("on"); $("listen").textContent = "🎙️ Start listening";
-  $("activity").textContent = reason && wasMode ? reason : "";
+  setStatus(reason && wasMode ? escapeHtml(reason) : "");
 }
 function resetCall() {
-  stopAll(); resetLanguage(); setLevel("idle"); lastAlert = null; $("replay").disabled = true;
+  stopAll(); stopVoices(); resetLanguage(); setLevel("idle"); lastAlert = null; $("replay").disabled = true;
+  callLines = []; callLangs = {}; alertedLevel = null; dangerAfter = null;
   $("transcript").innerHTML = '<div class="empty">Nothing yet.</div>';
   $("reasons").innerHTML = '<div class="empty">Red flags will appear here as the call goes on.</div>';
   $("evon").style.display = "none"; $("scamtype").textContent = ""; $("metric").textContent = "";
 }
 
+// Errors from an older, already-replaced start attempt (e.stale) are ignored: they must not stop
+// the call the user just started.
 $("listen").onclick = async () => {
   if (mode) return stopAll();
-  try { resetCall(); await startMic(); } catch (e) { stopAll(); toast(e.message || String(e)); }
+  try { resetCall(); await startMic(); }
+  catch (e) { if (!e.stale) { stopAll(); tellUser(e.message || String(e)); } }
 };
 $("file").onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = ""; if (!f) return;
-  try { resetCall(); await playFile(f); } catch (err) { stopAll(); toast(err.message || String(err)); }
+  try { resetCall(); await playFile(f); }
+  catch (err) { if (!err.stale) { stopAll(); tellUser(err.message || String(err)); } }
 };
 $("replay").onclick = () => lastAlert && onAlert(lastAlert);
 $("reset").onclick = resetCall;
