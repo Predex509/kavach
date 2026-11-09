@@ -37,6 +37,7 @@ CATEGORIES: dict[str, dict] = {
             r"pin(?! ?code)", r"password", r"card number", r"card ke (peeche|piche)",
             r"expiry date", r"net ?banking (id|password)",
             "ओटीपी", "ओ टी पी", "पिन(?! ?कोड)", "पासवर्ड", "सीवीवी", "सी वी वी", "कार्ड नंबर",
+            "ओ.टी.पी", "ఓ టీ పీ", "ఓ టి పి", "ఒ టి పి", "సీ వీ వీ",  # Prisma's letter-by-letter spellings
             "ఓటీపీ", "ఓటిపి", "పిన్", "పాస్‌వర్డ్", "పాస్వర్డ్", "సీవీవీ",
             "ஓடிபி", "ஓ டி பி", "பின் நம்பர்",
             "ಓಟಿಪಿ", "ಒಟಿಪಿ", "ಪಿನ್",
@@ -51,6 +52,7 @@ CATEGORIES: dict[str, dict] = {
             r"any ?desk", r"team ?viewer", r"quick ?support", r"rust ?desk",
             r"screen ?shar(e|ing)", r"\.?apk", r"remote access", r"airdroid",
             "एनीडेस्क", "एनी डेस्क", "टीम व्यूअर", "स्क्रीन शेयर", "क्विक सपोर्ट", "रस्ट डेस्क",
+            "ए पी के", "एपीके", "ఏ పీ కే", "ఏపీకే",
             "ఎనీడెస్క్", "ఎనీ డెస్క్", "స్క్రీన్ షేర్",
             "எனிடெஸ்க்", "ಎನಿಡೆಸ್ಕ್", "এনিডেস্ক",
         ],
@@ -88,7 +90,7 @@ CATEGORIES: dict[str, dict] = {
         "en": "Account / KYC / SIM block threat",
         "hi": "खाता / KYC / सिम बंद होने की धमकी",
         "patterns": [
-            r"\bkyc\b", r"account (will be )?(block|band|freeze|suspend|close)",
+            r"\bkyc\b", r"k\.? y\.? c", r"account (will be )?(block|band|freeze|suspend|close)",
             r"(block|band|freeze|suspend) ho (jayega|jaega|jaayega)",
             r"sim (card )?(block|band)", r"(electricity|bijli) (cut|kat|connection)",
             r"aadhaar (link|update|block)", r"pan (card )?(link|update|block)",
@@ -97,6 +99,12 @@ CATEGORIES: dict[str, dict] = {
             r"bill (update|pending) (nahi|not)", r"connection (cut|kat|disconnect)\w*",
             "बिजली कट", "बिजली का कनेक्शन", "कनेक्शन काट", "कनेक्शन कट", "बिल अपडेट",
             "కరెంట్ కట్", "కనెక్షన్ కట్", "బిల్ అప్‌డేట్",
+            # LPG gas KYC / subsidy and Aadhaar block scripts (2025-26)
+            r"(gas|lpg) (connection|subsidy) (band|block|cut|kat|ruk)\w*", r"subsidy (band|block|ruk)\w*",
+            r"aadhaar (card )?(band|block|deactivat|suspend|cancel)\w*",
+            "गैस कनेक्शन बंद", "सब्सिडी बंद", "सब्सिडी रुक", "आधार बंद", "आधार कार्ड बंद", "आधार ब्लॉक",
+            "आधार अपडेट नहीं", "आधार डीएक्टिवेट",
+            "సబ్సిడీ ఆగిపోతుంది", "సబ్సిడీ బ్లాక్", "ఆధార్ బ్లాక్", "ఆధార్ రద్దు", "కే వై సీ", "కె వై సి",
             "కేవైసీ", "కేవైసి", "బ్లాక్", "అకౌంట్ క్లోజ్", "సిమ్ బ్లాక్",
             "கேஒய்சி", "முடக்க", "ಕೆವೈಸಿ", "ಬ್ಲಾಕ್", "কেওয়াইসি", "ব্লক",
         ],
@@ -114,9 +122,17 @@ CATEGORIES: dict[str, dict] = {
             r"send (the )?money", r"pay (the )?(fine|penalty|fee)", r"penalty",
             r"deposit (karo|karna|kijiye|kar do|karein|karni)", r"pay(ment)? (karo|kijiye|kar do|kariye|karein)",
             r"(click|tap) (on )?(the |this |is )?link", r"link (pe|par) (click|jaake)",
+            # Advance fees: fake loan, insurance bonus, customs gift parcel (2025-26)
+            r"file (charge|fee)s?", r"(security|advance) (deposit|fee|amount)",
+            r"(gst|tds|insurance|stamp duty|clearance|noc) (charge|fee|amount)s?",
+            r"customs (duty|charge|fee|clearance)", r"bhejna (hoga|padega)",
+            r"jama (karo|kijiye|karein|karna hoga|karna padega)",
+            "फाइल चार्ज", "फ़ाइल चार्ज", "प्रोसेसिंग फीस", "कस्टम ड्यूटी", "कस्टम्स ड्यूटी", "जीएसटी", "जी एस टी",
+            "जमा कीजिए", "जमा करें", "जमा करना होगा", "जमा करवाइए",
+            "ఫైల్ ఛార్జ్", "ప్రాసెసింగ్ ఫీజు", "కస్టమ్స్ డ్యూటీ", "కస్టమ్ డ్యూటీ", "జీఎస్టీ", "జీ ఎస్ టీ",
             "लिंक पर क्लिक", "ఫీజు కట్టండి", "ఫీజు చెల్లించండి", "డబ్బులు కట్టండి", "లింక్ క్లిక్",
             "पैसे भेज", "पैसा भेज", "ट्रांसफर", "यूपीआई", "यू पी आई", "क्यूआर", "क्यू आर", "सेफ अकाउंट",
-            "पेमेंट कीजिए", "पेमेंट करें", "पेमेंट कर दीजिए", "स्कैन कर", "यూ పీ ఐ", "క్యూ ఆర్",
+            "पेमेंट कीजिए", "पेमेंट करें", "पेमेंट कर दीजिए", "स्कैन कर", "యూ పీ ఐ", "క్యూ ఆర్",
             "जुर्माना", "फीस भर", "पेमेंट कर",
             "డబ్బు పంపండి", "డబ్బులు పంపండి", "ట్రాన్స్ఫర్", "ట్రాన్స్‌ఫర్", "యూపీఐ",
             "క్యూఆర్", "పేమెంట్ చేయండి", "జరిమానా",
@@ -150,7 +166,7 @@ CATEGORIES: dict[str, dict] = {
         "patterns": [
             r"immediately", r"urgent(ly)?", r"right now", r"abhi (ke abhi|turant)", r"turant",
             r"within (\w+ )?(minutes|hours)", r"last (warning|chance)", r"aaj hi", r"jaldi", r"aaj raat",
-            r"today itself", "जल्दी", "आज रात",
+            r"today itself", "जल्दी", "आज रात", "आज ही",
             "तुरंत", "अभी के अभी", "फ़ौरन", "फौरन", "आख़िरी मौका", "आखिरी मौका",
             "వెంటనే", "ఇప్పుడే", "అర్జెంట్", "உடனே", "ತಕ್ಷಣ", "এখনই",
         ],
@@ -166,9 +182,25 @@ CATEGORIES: dict[str, dict] = {
             r"double (your|the) money", r"trading tips", r"investment (plan|scheme)",
             r"reward points?", r"youtube (videos? )?(like|subscribe)", r"(roz|daily|per day) \d+ (kamao|kamaiye|earn)",
             "रिवॉर्ड पॉइंट", "రివార్డ్ పాయింట్",
+            # Insurance bonus / refund and gift-parcel lures (2025-26)
+            r"policy (ka |ki )?(bonus|refund)", r"(unclaimed|pending) (bonus|amount)", r"bonus (pending|release)\w*",
+            r"gift (parcel|box|package)",
+            "पॉलिसी बोनस", "पॉलिसी का बोनस", "बोनस पेंडिंग", "बोनस रिलीज", "बोनस रिलीज़", "गिफ्ट पार्सल",
+            "పాలసీ బోనస్", "బోనస్ రిలీజ్", "బోనస్ పెండింగ్", "గిఫ్ట్ పార్సెల్", "గిఫ్ట్ పార్సిల్",
             "लॉटरी", "इनाम", "रिफंड", "कैशबैक", "जीत गए", "जीता है", "पैसे डबल",
             "లాటరీ", "బహుమతి", "రీఫండ్", "క్యాష్‌బ్యాక్", "గెలుచుకున్నారు",
             "லாட்டரி", "பரிசு", "ಲಾಟರಿ", "ಬಹುಮಾನ", "লটারি", "পুরস্কার",
+        ],
+    },
+    "loan_offer": {
+        "weight": 15,  # + "bank se bol" (15) must stay under caution: real banks do call about approved loans
+        "en": "Unasked-for loan approval",
+        "hi": "बिना माँगे लोन मंज़ूर होने का दावा",
+        "patterns": [
+            r"(loan|lone) (approve|approved|sanction|sanctioned|pass)\w*", r"pre[- ]?approved (personal )?loan",
+            r"(mudra|pm) loan",
+            "लोन अप्रूव", "लोन पास", "लोन सैंक्शन", "लोन मंजूर", "लोन मंज़ूर", "मुद्रा लोन",
+            "లోన్ అప్రూవ్", "లోన్ మంజూరు", "లోన్ శాంక్షన్", "ముద్ర లోన్",
         ],
     },
     "impersonation": {
@@ -180,6 +212,10 @@ CATEGORIES: dict[str, dict] = {
             r"(calling|speaking) from (your|the|sbi|hdfc|icici|axis) ?bank",
             r"bank manager", r"customer (care|service)", r"head office", r"\bofficer\b",
             r"inspector", r"from (the )?(rbi|trai|telecom department)",
+            r"\buidai\b", r"\birdai\b",
+            r"(gas agency|insurance (company|department)|aadhaar (centre|center|kendra)) se (bol|baat)",
+            "यूआईडीएआई", "यू आई डी ए आई", "आईआरडीएआई", "गैस एजेंसी से", "बीमा कंपनी से", "आधार केंद्र से बोल",
+            "గ్యాస్ ఏజెన్సీ నుంచి", "ఇన్సూరెన్స్ కంపెనీ నుంచి", "ఆధార్ సెంటర్ నుంచి",
             "बैंक से बोल", "बैंक से बात", "कस्टमर केयर", "अधिकारी", "इंस्पेक्टर", "हेड ऑफिस",
             "బ్యాంక్ నుంచి", "బ్యాంక్ నుండి", "కస్టమర్ కేర్", "ఆఫీసర్", "ఇన్‌స్పెక్టర్",
             # Prisma often writes the English word in Latin script inside an Indic sentence
@@ -192,6 +228,8 @@ CATEGORIES: dict[str, dict] = {
 
 # Combinations that name the scam and add a bonus on top of the base weights.
 COMBOS = [
+    ({"parcel", "lure"}, 25, "Customs / gift parcel scam", "कस्टम / गिफ्ट पार्सल स्कैम"),
+    ({"loan_offer", "payment_pressure"}, 25, "Fake loan approval scam", "फ़र्ज़ी लोन अप्रूवल स्कैम"),
     ({"authority_threat", "secrecy"}, 25, "Digital arrest scam", "डिजिटल अरेस्ट स्कैम"),
     ({"authority_threat", "payment_pressure"}, 25, "Digital arrest scam", "डिजिटल अरेस्ट स्कैम"),
     ({"parcel", "authority_threat"}, 15, "Courier / parcel scam", "कूरियर / पार्सल स्कैम"),
@@ -233,6 +271,16 @@ _REQUEST = [_compile(p) for p in [
 # Delivery agents legitimately ask for a delivery OTP. Only when nothing bank-related is in the sentence.
 _DELIVERY = [_compile(p) for p in [
     r"(delivery|deliver|order|zomato|swiggy|amazon|flipkart|blinkit|zepto)", "डिलीवरी", "ऑर्डर", "డెలివరీ",
+    # LPG cylinder delivery asks for a booking OTP (DAC), often in its own sentence
+    r"(booking|cylinder|dac)", "बुकिंग", "सिलेंडर", "బుకింగ్", "సిలిండర్",
+]]
+# A real lender deducts the processing fee from the loan ("loan amount se cut hogi"); a scammer wants it first.
+_DEDUCTED = [_compile(p) for p in [
+    r"(deduct|cut|kat)\w* (ho|hogi|hoga|jayegi|jaegi|karke|from)", r"loan amount (se|mein se|me se)", r"from the loan",
+    "लोन अमाउंट से", "में से कट", "లోన్ అమౌంట్ నుంచి", "లోన్ లో నుంచి",
+]]
+_UPFRONT = [_compile(p) for p in [
+    r"pehle", r"advance", r"abhi", r"first", r"before", r"right now", "पहले", "अभी", "ముందు", "ఇప్పుడే",
 ]]
 _MONEY = [_compile(p) for p in [
     r"(bank|upi|card|account|atm|cvv|kyc|wallet)", "बैंक", "खाता", "కార్డ్", "బ్యాంక్", "అకౌంట్",
@@ -264,6 +312,8 @@ def find_hits(text: str) -> list[dict]:
         hits = [h for h in hits if h["category"] not in ("credential", "secrecy")]
     elif "credential" in cats and _any(_DELIVERY, norm) and not _any(_MONEY, norm):
         hits = [h for h in hits if h["category"] != "credential"]
+    if "payment_pressure" in cats and _any(_DEDUCTED, norm) and not _any(_UPFRONT, norm):
+        hits = [h for h in hits if h["category"] != "payment_pressure"]
     return hits
 
 
