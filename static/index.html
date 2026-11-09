@@ -71,9 +71,22 @@
   #transcript { overflow-y:auto; max-height: 52vh; display:grid; gap: 8px; align-content: start; }
   .line { padding: 10px 12px; border-radius: 12px; background: var(--bg); line-height: 1.45; font-size: 18px; }
   .line.flagged { background: var(--danger-bg); }
+  .line.note { font-size: 15px; }
+  .line.unclear { background: transparent; border: 1px dashed var(--line); color: var(--muted); font-style: italic; }
+  .line.kavach { background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .line .meta { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
   .line mark { background: var(--danger); color: #fff; padding: 0 4px; border-radius: 6px; }
   #activity { font-size: 14px; color: var(--muted); min-height: 20px; margin-top: 8px; }
+  /* live audio bars: show that sound is actually reaching Kavach */
+  .viz { display: flex; align-items: center; justify-content: center; gap: 3px; height: 52px; margin-top: 10px; opacity: 0; transition: opacity .3s; }
+  .viz.on { opacity: 1; }
+  .viz span { width: 5px; height: 4px; border-radius: 3px; background: var(--ink); transition: height .09s linear; }
+  .vizText { font-size: 13px; color: var(--muted); min-height: 18px; margin-top: 4px; }
+  .vizText.warn { color: var(--caution); font-weight: 600; }
+  .meter { display: none; }
+  .meter { height: 10px; border-radius: 999px; background: var(--bg); overflow: hidden; border: 1px solid var(--line); }
+  #meterBar { height: 100%; width: 0; background: var(--muted); transition: width .08s linear, background .2s; }
+  #meterText { font-size: 13px; color: var(--muted); margin-top: 4px; min-height: 18px; }
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background: var(--safe); margin-right: 6px; vertical-align: middle; }
   .dot.live { animation: blink 1s infinite; } @keyframes blink { 50% { opacity: .2; } }
 
@@ -97,6 +110,8 @@
       <div class="verdict-hi" id="verdictHi">फ़ोन स्पीकर पर रखें और "Start" दबाएँ</div>
       <div class="scamtype" id="scamtype"></div>
       <div class="metric" id="metric"></div>
+      <div class="viz" id="viz" aria-hidden="true"></div>
+      <div class="vizText" id="vizText"></div>
     </div>
 
     <div class="card controls">
@@ -110,7 +125,7 @@
           <option value="bn-IN,en-IN">Bengali + English</option>
           <option value="mr-IN,en-IN">Marathi + English</option>
           <option value="en-IN">English</option>
-          <option value="indic-auto" selected>Detect automatically (recommended)</option>
+          <option value="indic-auto" id="autoOpt" selected>Detect automatically (recommended)</option>
         </select>
       </div>
       <button id="listen">🎙️ Start listening</button>
@@ -119,6 +134,10 @@
         <button class="ghost" id="replay" disabled>🔊 Repeat warning</button>
       </div>
       <button class="ghost" id="reset">New call</button>
+      <div id="meterWrap" style="display:none">
+        <div class="meter"><div id="meterBar"></div></div>
+        <div id="meterText"></div>
+      </div>
       <div id="activity"></div>
     </div>
   </section>
@@ -152,6 +171,12 @@ const COPY = {
 };
 
 let ws = null, audioCtx = null, micStream = null, workletNode = null, fileTimer = null;
+// Kavach's own spoken warning must not be scored as part of the call. The browser's echo
+// cancellation removes most of it from the mic, and the server drops any transcript that is
+// just the warning played back. The mic is NOT muted while speaking: muting lost 8 s of the
+// scammer's call during a warning (tested Nov 9).
+let speaking = 0, micResumeAt = 0;
+const micPaused = () => false;
 let fileSource = null, fileGain = null, mode = null, lastAlert = null, lastLevel = "idle";
 const ttsCache = new Map();
 
@@ -178,6 +203,21 @@ function addLine(msg) {
   div.innerHTML = `<div class="meta">${msg.t}s${msg.lang ? " · " + msg.lang : ""}${msg.latency_ms ? " · " + msg.latency_ms + " ms" : ""}</div>${html}`;
   box.appendChild(div); box.scrollTop = box.scrollHeight;
 }
+// Non-speech lines in the transcript: parts the mic couldn't make out, and Kavach's own warnings,
+// so the transcript reads as the whole conversation.
+function addNote(t, text, kind) {
+  const box = $("transcript");
+  if (box.querySelector(".empty")) box.innerHTML = "";
+  const last = box.lastElementChild;
+  if (kind === "unclear" && last && last.classList.contains("unclear")) return;  // one marker per gap
+  const div = document.createElement("div");
+  div.className = "line note " + kind;
+  div.innerHTML = `<div class="meta">${t}s</div>${escapeHtml(text)}`;
+  box.appendChild(div); box.scrollTop = box.scrollHeight;
+}
+const callSeconds = () => Math.round((performance.now() - callStart) / 100) / 10;
+let callStart = performance.now();
+
 function renderRisk(r) {
   setLevel(r.level, r.score);
   $("scamtype").innerHTML = r.level !== "safe" && r.scam_type_en ? `<b>${escapeHtml(r.scam_type_en)}</b> · ${escapeHtml(r.scam_type_hi || "")}` : "";
@@ -194,6 +234,66 @@ function renderRisk(r) {
   if (r.evon) { ev.style.display = "block"; ev.innerHTML = `<b>Evon says</b> · risk ${r.evon.risk} · ${escapeHtml(r.evon.scam_type || "")}<br>${escapeHtml(r.evon.reason || "")}`; }
 }
 
+/* ---------------------------------------------------------------- detected language */
+// With "Detect automatically", show which language Prisma is hearing right in the dropdown.
+const LANG_NAMES = {
+  hi: "Hindi (हिन्दी)", te: "Telugu (తెలుగు)", ta: "Tamil (தமிழ்)", kn: "Kannada (ಕನ್ನಡ)",
+  bn: "Bengali (বাংলা)", mr: "Marathi (मराठी)", gu: "Gujarati (ગુજરાતી)", ml: "Malayalam (മലയാളം)",
+  pa: "Punjabi (ਪੰਜਾਬੀ)", or: "Odia (ଓଡ଼ିଆ)", en: "English",
+};
+const AUTO_LABEL = "Detect automatically (recommended)";
+let langCounts = {};
+function noteLanguage(code) {
+  if (!code || $("lang").value !== "indic-auto") return;
+  langCounts[code] = (langCounts[code] || 0) + 1;
+  const ranked = Object.keys(langCounts).sort((a, b) => langCounts[b] - langCounts[a]);
+  const main = ranked.find(c => c !== "en") || "en";
+  let label = LANG_NAMES[main] || main.toUpperCase();
+  if (main !== "en" && langCounts.en) label += " + English";
+  $("autoOpt").textContent = `Detected: ${label}`;
+}
+function resetLanguage() { langCounts = {}; $("autoOpt").textContent = AUTO_LABEL; }
+
+/* ---------------------------------------------------------------- live audio bars */
+const VIZ_N = 36, vizBars = [];
+for (let i = 0; i < VIZ_N; i++) { const b = document.createElement("span"); $("viz").appendChild(b); vizBars.push(b); }
+let vizHist = new Array(VIZ_N).fill(0), sentSamples = 0, lastSound = 0, vizTimer = null;
+function feedViz(rms) {                       // rms of the audio being sent, 0..1
+  const db = 20 * Math.log10(Math.max(rms, 1e-5));
+  vizHist.push(Math.max(0, Math.min(1, (db + 60) / 50))); vizHist.shift();
+  vizBars.forEach((b, i) => { b.style.height = (4 + vizHist[i] * 44) + "px"; b.style.opacity = 0.3 + 0.7 * vizHist[i]; });
+  if (db > -48) lastSound = performance.now();
+}
+function updateVizText() {
+  const secs = Math.floor(sentSamples / 16000), t = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  const quiet = performance.now() - lastSound > 4000;
+  $("vizText").textContent = quiet ? `No sound reaching Kavach for a few seconds · ${t}` : `Audio reaching Kavach · ${t}`;
+  $("vizText").className = quiet ? "vizText warn" : "vizText";
+}
+function startViz() {
+  vizHist.fill(0); sentSamples = 0; lastSound = performance.now(); callStart = performance.now();
+  $("viz").classList.add("on"); clearInterval(vizTimer); vizTimer = setInterval(updateVizText, 250); updateVizText();
+}
+function stopViz() {
+  clearInterval(vizTimer); vizTimer = null; $("viz").classList.remove("on"); $("vizText").textContent = "";
+  vizBars.forEach(b => { b.style.height = "4px"; });
+}
+
+/* ---------------------------------------------------------------- mic level meter */
+// Shows the RAW mic level (before Kavach's boost) so you can place the phone well.
+let loudSince = 0;
+function showLevel({ level, gain }) {
+  feedViz(level);
+  const db = 20 * Math.log10(Math.max(level, 1e-5));          // about -100 (silence) .. 0 (max)
+  const pct = Math.max(0, Math.min(100, (db + 65) / 50 * 100));
+  const bar = $("meterBar"), txt = $("meterText");
+  bar.style.width = pct + "%";
+  if (db > -32) { bar.style.background = "var(--safe)"; loudSince = performance.now(); txt.textContent = "Mic hears speech clearly"; }
+  else if (db > -48) { bar.style.background = "var(--caution)"; loudSince = performance.now();
+    txt.textContent = "Faint: bring the phone closer or turn it up"; }
+  else if (performance.now() - loudSince > 1500) { bar.style.background = "var(--muted)"; txt.textContent = "Quiet"; }
+}
+
 /* ---------------------------------------------------------------- spoken warnings */
 async function getWarning(body) {
   const key = JSON.stringify(body);
@@ -208,12 +308,18 @@ async function speak(body) {
     const buf = await getWarning(body);
     const audio = await audioCtx.decodeAudioData(buf.slice(0));
     if (fileGain) fileGain.gain.setTargetAtTime(0.12, audioCtx.currentTime, 0.1);   // duck the test call
-    const src = audioCtx.createBufferSource(); src.buffer = audio; src.connect(audioCtx.destination); src.start();
-    return new Promise(res => src.onended = () => { if (fileGain) fileGain.gain.setTargetAtTime(1, audioCtx.currentTime, 0.2); res(); });
+    const src = audioCtx.createBufferSource(); src.buffer = audio; src.connect(audioCtx.destination);
+    speaking++; src.start();
+    return new Promise(res => src.onended = () => {
+      speaking = Math.max(0, speaking - 1); micResumeAt = performance.now() + 800;  // room echo dies down
+      if (fileGain) fileGain.gain.setTargetAtTime(1, audioCtx.currentTime, 0.2); res();
+    });
   } catch (e) { ttsCache.delete(JSON.stringify(body)); toast("Couldn't play warning: " + e.message); }
 }
 async function onAlert(a) {
   lastAlert = a; $("replay").disabled = false;
+  addNote(callSeconds(), a.level === "danger" ? "🔊 Kavach warned out loud: likely a scam, cut the call"
+                                              : "🔊 Kavach warned out loud: be careful, don't share OTP / PIN", "kavach");
   await speak({ lang: a.lang, level: a.level });
   if (a.reason && a.level === "danger") await speak({ lang: a.lang, text: a.reason });
 }
@@ -232,7 +338,8 @@ function openSocket() {
       else if (m.type === "status" && m.state === "reconnecting") $("activity").textContent = "Reconnecting…";
       else if (m.type === "speech_start") $("activity").innerHTML = '<span class="dot live"></span>Hearing speech…';
       else if (m.type === "processing") $("activity").innerHTML = '<span class="dot"></span>Transcribing…';
-      else if (m.type === "transcript") addLine(m);
+      else if (m.type === "transcript") { addLine(m); noteLanguage(m.lang); }
+      else if (m.type === "unclear") addNote(m.t, "… couldn't make out this part", "unclear");
       else if (m.type === "risk") renderRisk(m);
       else if (m.type === "alert") onAlert(m);
       else if (m.type === "notice") { toast(m.message, 6000); }
@@ -243,8 +350,14 @@ function openSocket() {
 
 /* ---------------------------------------------------------------- mic capture → 16 kHz PCM */
 const WORKLET = `
+// Downsamples the mic to 16 kHz and reports the input level for the meter. No software gain:
+// the browser's noise suppression + auto gain handle levels, and boosting here amplified room
+// noise (fans, coolers) along with the caller (tested Nov 9).
 class PCM16 extends AudioWorkletProcessor {
-  constructor() { super(); this.ratio = sampleRate / 16000; this.pos = 0; this.acc = 0; this.cnt = 0; this.out = new Int16Array(512); this.n = 0; }
+  constructor() {
+    super(); this.ratio = sampleRate / 16000; this.pos = 0; this.acc = 0; this.cnt = 0;
+    this.out = new Int16Array(512); this.n = 0; this.sq = 0; this.blocks = 0;
+  }
   process(inputs) {
     const ch = inputs[0] && inputs[0][0]; if (!ch) return true;
     for (let i = 0; i < ch.length; i++) {
@@ -252,8 +365,12 @@ class PCM16 extends AudioWorkletProcessor {
       if (this.pos >= this.ratio) {           // box-filter downsample to 16 kHz
         this.pos -= this.ratio;
         const v = Math.max(-1, Math.min(1, this.acc / this.cnt)); this.acc = 0; this.cnt = 0;
+        this.sq += v * v;
         this.out[this.n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
-        if (this.n === 512) { this.port.postMessage(this.out.buffer, [this.out.buffer]); this.out = new Int16Array(512); this.n = 0; }
+        if (this.n === 512) {
+          this.port.postMessage(this.out.buffer, [this.out.buffer]); this.out = new Int16Array(512); this.n = 0;
+          if (++this.blocks % 3 === 0) { this.port.postMessage({ level: Math.sqrt(this.sq / 1536), gain: 1 }); this.sq = 0; }
+        }
       }
     }
     return true;
@@ -276,13 +393,23 @@ function prefetchWarnings() {
 
 async function startMic() {
   await ensureAudio();
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
+  // Open the page with ?raw=1 to switch off the browser's echo cancellation / noise suppression,
+  // to compare which captures a phone on speaker better in your room.
+  const raw = new URLSearchParams(location.search).has("raw");
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: true } });
   await openSocket();
   const src = audioCtx.createMediaStreamSource(micStream);
   workletNode = new AudioWorkletNode(audioCtx, "pcm16");
-  workletNode.port.onmessage = (e) => { if (ws && ws.readyState === 1) ws.send(e.data); };
+  workletNode.port.onmessage = (e) => {
+    // Level readings are plain objects; audio is a raw buffer. (Don't use instanceof here: Safari
+    // can report buffers from the audio thread as a different ArrayBuffer type.)
+    if (e.data && typeof e.data.level === "number") return showLevel(e.data);
+    if (!ws || ws.readyState !== 1) return;
+    // Send silence instead of nothing, so Prisma's stream keeps its timing while the warning plays.
+    ws.send(micPaused() ? new Int16Array(512).buffer : e.data); sentSamples += 512;
+  };
   src.connect(workletNode);
-  mode = "mic"; prefetchWarnings();
+  mode = "mic"; prefetchWarnings(); $("meterWrap").style.display = "block"; startViz();
   $("listen").classList.add("on"); $("listen").textContent = "■ Stop listening";
 }
 
@@ -297,7 +424,7 @@ async function playFile(file) {
   const pcm = (await off.startRendering()).getChannelData(0);
 
   await openSocket();
-  mode = "file"; prefetchWarnings();
+  mode = "file"; prefetchWarnings(); startViz();
   $("listen").classList.add("on"); $("listen").textContent = "■ Stop test call";
 
   // Play it out loud so the demo audience hears the call
@@ -308,12 +435,14 @@ async function playFile(file) {
   const total = pcm.length + 24000, t0 = performance.now(); let sent = 0;
   fileTimer = setInterval(() => {
     const due = Math.min(total, Math.floor((performance.now() - t0) / 1000 * 16000 / 512) * 512);
+    let sq = 0, n = 0;
     while (sent + 512 <= due) {
       const frame = new Int16Array(512);
-      for (let i = 0; i < 512; i++) { const v = sent + i < pcm.length ? Math.max(-1, Math.min(1, pcm[sent + i])) : 0; frame[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
-      if (ws && ws.readyState === 1) ws.send(frame.buffer);
-      sent += 512;
+      for (let i = 0; i < 512; i++) { const v = sent + i < pcm.length ? Math.max(-1, Math.min(1, pcm[sent + i])) : 0; sq += v * v; frame[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+      if (ws && ws.readyState === 1) { ws.send(frame.buffer); sentSamples += 512; }
+      sent += 512; n += 512;
     }
+    if (n) feedViz(Math.sqrt(sq / n));
     if (sent + 512 > total) {
       clearInterval(fileTimer); fileTimer = null;
       $("activity").textContent = "Test call finished, waiting for the last sentence…";
@@ -326,7 +455,7 @@ async function playFile(file) {
 
 /* ---------------------------------------------------------------- stop / reset */
 function stopAll(reason) {
-  const wasMode = mode; mode = null;
+  const wasMode = mode; mode = null; $("meterWrap").style.display = "none"; stopViz();
   if (fileTimer) { clearInterval(fileTimer); fileTimer = null; }
   if (fileSource) { try { fileSource.stop(); } catch {} fileSource = null; fileGain = null; }
   if (workletNode) { workletNode.disconnect(); workletNode = null; }
@@ -336,7 +465,7 @@ function stopAll(reason) {
   $("activity").textContent = reason && wasMode ? reason : "";
 }
 function resetCall() {
-  stopAll(); setLevel("idle"); lastAlert = null; $("replay").disabled = true;
+  stopAll(); resetLanguage(); setLevel("idle"); lastAlert = null; $("replay").disabled = true;
   $("transcript").innerHTML = '<div class="empty">Nothing yet.</div>';
   $("reasons").innerHTML = '<div class="empty">Red flags will appear here as the call goes on.</div>';
   $("evon").style.display = "none"; $("scamtype").textContent = ""; $("metric").textContent = "";
@@ -352,6 +481,7 @@ $("file").onchange = async (e) => {
 };
 $("replay").onclick = () => lastAlert && onAlert(lastAlert);
 $("reset").onclick = resetCall;
+$("lang").onchange = resetLanguage;
 
 fetch("/api/config").then(r => r.json()).then(c => {
   $("badge").textContent = `${c.stt_model} · Timbre${c.evon ? " · Evon" : ""}${c.context ? "" : " · no keyterms"}`;

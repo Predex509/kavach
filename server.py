@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -31,13 +32,25 @@ load_dotenv()
 
 import evon  # noqa: E402  (reads env after load_dotenv)
 import gnani_tts  # noqa: E402
-from detector import CallRisk  # noqa: E402
+from detector import CallRisk, normalize  # noqa: E402
 
 API_KEY = os.getenv("GNANI_API_KEY", "")
 STT_URL = "wss://api.vachana.ai/stt/v3/stream"
 STT_MODEL = os.getenv("STT_MODEL", "prisma-v3.0")
 # USE_CONTEXT=0 turns off keyterms/topic so you can measure how much they help.
 USE_CONTEXT = os.getenv("USE_CONTEXT", "1") == "1"
+# Listening (VAD) settings for live mic audio. Tune in .env without code changes:
+# a phone on speaker sounds quieter and farther away than someone talking into the laptop,
+# so a lower threshold keeps more of it; a longer silence keeps sentences from being cut in half.
+VAD_THRESHOLD = os.getenv("VAD_THRESHOLD", "0.5")
+MIN_SILENCE_MS = os.getenv("MIN_SILENCE_MS", "800")
+# Longest sentence before Prisma is made to transcribe anyway. Room noise (fans, coolers) can
+# hide the pauses between sentences; a short cap keeps transcripts flowing during a live call.
+MAX_SPEECH_S = os.getenv("MAX_SPEECH_S", "8")
+# SAVE_AUDIO=1 saves what the browser sent (16 kHz WAV) to recordings/, to debug missed speech.
+# Off by default: Kavach does not store audio unless you turn this on for testing.
+SAVE_AUDIO = os.getenv("SAVE_AUDIO", "0") == "1"
+RECORDINGS = Path(__file__).parent / "recordings"
 
 # Words scammers use that a generic model often mishears. Prisma v3.0 "keyterms" bias recognition.
 KEYTERMS = [
@@ -50,6 +63,23 @@ TOPIC = ("A phone call in India on speakerphone. The caller may mention a bank, 
          "a parcel, police, an app to install, or a payment.")
 
 LEVELS = {"safe": 0, "caution": 1, "danger": 2}
+
+
+def _words(text: str) -> set[str]:
+    # split on spaces/punctuation only: \w would break Hindi/Telugu words at vowel signs
+    return {w for w in re.split(r"[\s.,!?।॥|:;\"'()\-]+", normalize(text)) if w}
+
+
+# Kavach's own warnings, so the live mic does not score them if they leak back in.
+_WARNING_WORDS = [_words(t) for level in gnani_tts.WARNINGS.values() for t in level.values()]
+
+
+def is_own_warning(text: str) -> bool:
+    """True when a transcript is mostly the words of one of Kavach's spoken warnings."""
+    words = _words(text)
+    if len(words) < 4:
+        return False
+    return any(len(words & w) / len(words) >= 0.6 for w in _WARNING_WORDS)
 
 # If Gnani refuses a header (close code 1008), the server steps down through these.
 # Tested Nov 8: Gnani streaming rejects `format: codemix` and/or a two-language list such as
@@ -74,10 +104,10 @@ def build_stt_headers(language: str, level: int = 0) -> dict:
     }
     if level <= 2:
         headers.update({
-            "x-vad-threshold": "0.6",       # speakerphone in a room: a bit stricter than a clean mic
-            "x-min-silence-ms": "600",
+            "x-vad-threshold": VAD_THRESHOLD,   # lower = keeps quieter, farther speech (see .env)
+            "x-min-silence-ms": MIN_SILENCE_MS,
             "x-min-speech-ms": "150",
-            "x-max-speech-s": "15",         # scammers monologue; keep transcripts flowing
+            "x-max-speech-s": MAX_SPEECH_S,  # keep transcripts flowing even in a noisy room
             "x-idle-timeout-sec": "300",
         })
     if level <= 1 and USE_CONTEXT:
@@ -170,16 +200,43 @@ class CallSession:
             return
         self.language = start.get("language") or "indic-auto"
         self.reset()
+        self.recording = bytearray()
+        self.audio_bytes = 0
+        print(f"[call] started, language={self.language}, vad={VAD_THRESHOLD}, silence={MIN_SILENCE_MS}ms")
 
         browser = asyncio.create_task(self.read_browser())
         upstream = asyncio.create_task(self.upstream_loop())
+        watchdog = asyncio.create_task(self.audio_watchdog())
         done, pending = await asyncio.wait({browser, upstream}, return_when=asyncio.FIRST_COMPLETED)
         self.stopped = True
+        watchdog.cancel()
         for task in pending:
             task.cancel()
         for task in done:
             if task.exception() and not isinstance(task.exception(), WebSocketDisconnect):
                 await self.send({"type": "error", "message": str(task.exception())})
+        ended_by = "browser" if browser in done else "speech service"
+        print(f"[call] received {self.audio_bytes / 32000:.1f}s of audio from the browser")
+        print(f"[call] ended by {ended_by} after {time.monotonic() - self.started:.0f}s, "
+              f"{len(self.lines)} transcripts, final {self.risk.analyse()['level']}")
+        if SAVE_AUDIO and self.recording:
+            import wave
+            RECORDINGS.mkdir(exist_ok=True)
+            path = RECORDINGS / f"call-{time.strftime('%Y%m%d-%H%M%S')}.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(bytes(self.recording))
+            print(f"[call] saved {path.name} ({len(self.recording) / 32000:.1f}s)")
+
+    async def audio_watchdog(self):
+        """Tell the user if the browser is not sending audio (mic blocked, browser bug)."""
+        await asyncio.sleep(4)
+        if self.audio_bytes == 0 and not self.stopped:
+            print("[call] WARNING: no audio received from the browser after 4s")
+            await self.send({"type": "error", "message": "No audio is reaching Kavach from the browser. "
+                             "Check the microphone permission, or try Chrome."})
 
     async def read_browser(self):
         buf = bytearray()
@@ -189,6 +246,9 @@ class CallSession:
                 return
             if msg.get("bytes"):
                 buf.extend(msg["bytes"])
+                self.audio_bytes += len(msg["bytes"])
+                if SAVE_AUDIO:
+                    self.recording.extend(msg["bytes"])
                 while len(buf) >= self.FRAME:
                     frame, buf = bytes(buf[: self.FRAME]), buf[self.FRAME:]
                     if self.audio.full():  # never let latency build up
@@ -278,12 +338,23 @@ class CallSession:
     async def on_transcript(self, msg: dict):
         text = (msg.get("text") or "").strip()
         if not text:
+            # Speech was heard but nothing could be made out: show it in the transcript so the
+            # conversation reads complete instead of silently skipping that part.
+            await self.send({"type": "unclear", "t": round(time.monotonic() - self.started, 1)})
+            return
+        if is_own_warning(text):
+            print(f"[stt] ignored Kavach's own warning: {text}")
             return
         lang = (msg.get("detected_language_code") or "")[:2]
         if lang:
             self.langs[lang] += 1
         self.lines.append(text)
         hits = self.risk.add_segment(text)
+        if len(self.lines) > 1:
+            # A phrase can be split across two captions ("…digital" | "arrest…") when the mic
+            # audio is cut mid-sentence; also check the previous caption joined with this one.
+            self.risk.add_segment(self.lines[-2] + " " + text)
+        print(f"[stt] {time.monotonic() - self.started:5.1f}s [{lang}] {text}")
         await self.send({
             "type": "transcript",
             "text": text,

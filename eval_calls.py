@@ -4,6 +4,7 @@ Kavach experiment: does Prisma's context (keyterms + topic) help on noisy phone 
     .venv/bin/python eval_calls.py                                 # every call in demo_calls/
     .venv/bin/python eval_calls.py --dirs demo_calls demo_calls_noisy
     .venv/bin/python eval_calls.py --only scam_kyc_anydesk_hinglish --configs with_context
+    .venv/bin/python eval_calls.py --dirs recordings --configs with_context   # replay saved mic tests
 
 Each demo call (8 kHz WAV) is streamed to Gnani Prisma v3.0 at real-time speed, once WITH keyterms
 and topic and once WITHOUT, using the same VAD settings as the app. Every transcript goes through the
@@ -63,12 +64,12 @@ def spoken_terms(name: str) -> list[str]:
     return [t for t in TERMS if _found(t, script)]
 
 
-def headers(language: str, with_context: bool) -> dict:
+def headers(language: str, with_context: bool, rate: int = 8000) -> dict:
     h = {
         "x-api-key-id": API_KEY,
         "model": STT_MODEL,
         "language_code": language,
-        "x-sample-rate": "8000",  # demo calls are narrowband phone audio
+        "x-sample-rate": str(rate),  # 8 kHz demo calls, or 16 kHz mic recordings
         "x-vad-threshold": "0.6",
         "x-min-silence-ms": "600",
         "x-min-speech-ms": "150",
@@ -83,10 +84,12 @@ def headers(language: str, with_context: bool) -> dict:
 
 async def run_call(path: Path, language: str, with_context: bool) -> dict:
     with wave.open(str(path), "rb") as w:
-        if w.getframerate() != 8000 or w.getnchannels() != 1 or w.getsampwidth() != 2:
-            raise SystemExit(f"{path.name}: expected 8 kHz mono 16-bit (made by make_demo_calls.py)")
+        rate = w.getframerate()
+        if rate not in (8000, 16000) or w.getnchannels() != 1 or w.getsampwidth() != 2:
+            raise SystemExit(f"{path.name}: expected 8 or 16 kHz mono 16-bit WAV")
         pcm = w.readframes(w.getnframes())
-    pcm += bytes(24000)  # 1.5 s of silence so the last sentence is closed
+    pcm += bytes(int(rate * 1.5) * 2)  # 1.5 s of silence so the last sentence is closed
+    frame_s = 512 / rate  # 1024 bytes = 512 samples
     frames = [pcm[i:i + 1024].ljust(1024, b"\0") for i in range(0, len(pcm), 1024)]
 
     risk, lines, latencies = CallRisk(), [], []
@@ -98,13 +101,13 @@ async def run_call(path: Path, language: str, with_context: bool) -> dict:
         return round(time.monotonic() - t0, 1)
 
     try:
-        async with websockets.connect(STT_URL, additional_headers=headers(language, with_context), max_size=None) as ws:
+        async with websockets.connect(STT_URL, additional_headers=headers(language, with_context, rate), max_size=None) as ws:
             t0 = time.monotonic()
 
             async def send():
-                for i, f in enumerate(frames):  # 1024 bytes = 64 ms at 8 kHz; keep real-time pace
+                for i, f in enumerate(frames):  # keep real-time pace
                     await ws.send(f)
-                    delay = t0 + (i + 1) * 0.064 - time.monotonic()
+                    delay = t0 + (i + 1) * frame_s - time.monotonic()
                     if delay > 0:
                         await asyncio.sleep(delay)
 
