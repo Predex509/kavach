@@ -42,6 +42,10 @@
   .verdict-hi { font-size: 22px; font-weight: 600; margin-top: 2px; }
   .scamtype { margin-top: 10px; font-size: 17px; color: var(--ink); min-height: 24px; }
   .metric { margin-top: 8px; font-size: 14px; color: var(--muted); min-height: 20px; }
+  #call1930 { display:none; margin-top: 14px; padding: 18px 16px; border-radius: 14px; background: var(--danger); color: #fff;
+    font-size: 24px; font-weight: 700; text-decoration: none; line-height: 1.2; }
+  #call1930 small { display:block; font-size: 15px; font-weight: 500; margin-top: 2px; }
+  #status.danger #call1930 { display:block; }
 
   /* Controls */
   .controls { display:grid; gap: 12px; margin-top: 16px; }
@@ -72,14 +76,34 @@
   .line { padding: 10px 12px; border-radius: 12px; background: var(--bg); line-height: 1.45; font-size: 18px; }
   .line.flagged { background: var(--danger-bg); }
   .line .meta { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .line { overflow-wrap: anywhere; }
   .line mark { background: var(--danger); color: #fff; padding: 0 4px; border-radius: 6px; }
   #activity { font-size: 14px; color: var(--muted); min-height: 20px; margin-top: 8px; }
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background: var(--safe); margin-right: 6px; vertical-align: middle; }
   .dot.live { animation: blink 1s infinite; } @keyframes blink { 50% { opacity: .2; } }
 
+  /* Large text toggle */
+  body.big .verdict { font-size: 36px; } body.big .verdict-hi { font-size: 28px; }
+  body.big .scamtype { font-size: 21px; } body.big .metric { font-size: 17px; }
+  body.big .line { font-size: 24px; } body.big .line .meta { font-size: 15px; }
+  #bigtext[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+
   footer { max-width:1180px; margin: 0 auto; padding: 0 28px 28px; color: var(--muted); font-size: 14px; }
   #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
     padding: 10px 16px; border-radius: 12px; font-size: 15px; display:none; max-width: 90vw; }
+
+  /* Phones (down to 380 px) */
+  main > section { min-width: 0; }
+  @media (max-width: 480px) {
+    header { gap: 4px 10px; } h1 { font-size: 28px; } header .badge { margin-left: 0; width: 100%; }
+    .card { padding: 16px; border-radius: 16px; }
+    .orb { width: 120px; height: 120px; font-size: 40px; }
+    .verdict { font-size: 24px; } .verdict-hi { font-size: 19px; }
+    body.big .verdict { font-size: 30px; } body.big .verdict-hi { font-size: 24px; }
+    .row { grid-template-columns: 1fr; }
+    #transcript { max-height: 60vh; }
+    footer { padding: 0 16px 24px; }
+  }
 </style>
 </head>
 <body>
@@ -97,6 +121,7 @@
       <div class="verdict-hi" id="verdictHi">फ़ोन स्पीकर पर रखें और "Start" दबाएँ</div>
       <div class="scamtype" id="scamtype"></div>
       <div class="metric" id="metric"></div>
+      <a id="call1930" href="tel:1930">📞 Call 1930<small>साइबर क्राइम हेल्पलाइन · Cyber Crime Helpline</small></a>
     </div>
 
     <div class="card controls">
@@ -118,7 +143,10 @@
         <label class="filebtn ghost">▶ Play a test call<input type="file" id="file" accept="audio/*"></label>
         <button class="ghost" id="replay" disabled>🔊 Repeat warning</button>
       </div>
-      <button class="ghost" id="reset">New call</button>
+      <div class="row">
+        <button class="ghost" id="reset">New call</button>
+        <button class="ghost" id="bigtext" aria-pressed="false">Aa Large text</button>
+      </div>
       <div id="activity"></div>
     </div>
   </section>
@@ -352,6 +380,12 @@ $("file").onchange = async (e) => {
 };
 $("replay").onclick = () => lastAlert && onAlert(lastAlert);
 $("reset").onclick = resetCall;
+function setBigText(on) {
+  document.body.classList.toggle("big", on); $("bigtext").setAttribute("aria-pressed", on);
+  try { localStorage.setItem("kavach.bigtext", on ? "1" : "0"); } catch {}
+}
+$("bigtext").onclick = () => setBigText(!document.body.classList.contains("big"));
+try { if (localStorage.getItem("kavach.bigtext") === "1") setBigText(true); } catch {}
 
 fetch("/api/config").then(r => r.json()).then(c => {
   $("badge").textContent = `${c.stt_model} · Timbre${c.evon ? " · Evon" : ""}${c.context ? "" : " · no keyterms"}`;
