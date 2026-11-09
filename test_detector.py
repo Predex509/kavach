@@ -83,6 +83,31 @@ SCAMS = [
         "आपका बिजली का कनेक्शन आज रात काट दिया जाएगा।",
         "तुरंत इस नंबर पर कॉल करें।",
     ]),
+    # 2025-26 scripts reported in India (loan fee, IRDAI bonus, LPG KYC, Aadhaar block, customs gift)
+    ("Fake loan approval file charge (Hinglish)", "danger", [
+        "Sir main Bajaj Finance se bol raha hoon, aapka 5 lakh ka personal loan approve ho gaya hai.",
+        "Bas 2999 ka file charge pehle UPI se bhejna hoga, phir amount turant aapke account mein aa jayega.",
+    ]),
+    ("Insurance bonus, fake IRDAI (Hindi)", "danger", [
+        "नमस्ते, मैं IRDAI के head office से बोल रहा हूँ।",
+        "आपकी पुरानी LIC पॉलिसी का तीन लाख का बोनस पेंडिंग है।",
+        "बोनस रिलीज़ करने के लिए अठारह प्रतिशत जीएसटी आज ही जमा कीजिए।",
+    ]),
+    ("LPG gas KYC + spelled OTP (Telugu)", "danger", [
+        "నమస్తే, నేను గ్యాస్ ఏజెన్సీ నుంచి మాట్లాడుతున్నాను.",
+        "మీ గ్యాస్ కే వై సీ పెండింగ్ ఉంది, ఈరోజు చేయకపోతే మీ గ్యాస్ కనెక్షన్ కట్ అవుతుంది.",
+        "ఇప్పుడు మీ ఫోన్‌కి వచ్చిన ఓ టీ పీ నాకు చెప్పండి.",
+    ]),
+    ("Aadhaar block + spelled OTP (Hindi)", "danger", [
+        "मैं यू आई डी ए आई से बोल रहा हूँ, आपका आधार अपडेट नहीं हुआ है।",
+        "आज रात तक आपका आधार बंद हो जाएगा।",
+        "आपके फ़ोन पर जो ओ टी पी आया है वो मुझे बता दीजिए।",
+    ]),
+    ("Customs gift parcel (Telugu, Prisma-style)", "danger", [
+        "నమస్తే, నేను Delhi airport customs నుంచి మాట్లాడుతున్నాను.",
+        "మీ పేరు మీద London నుంచి ఒక gift parcel వచ్చింది.",
+        "customs duty 45,000 రూపాయలు ఇప్పుడే కట్టండి, లేకపోతే money laundering case అవుతుంది.",
+    ]),
 ]
 
 NORMAL = [
@@ -142,6 +167,27 @@ NORMAL = [
     ]),
     ("Normal: lottery joke (Hinglish)", [
         "Yaar maine lottery ka ticket liya hai, dekhte hain kya hota hai.",
+    ]),
+    # Look-alikes of the 2025-26 scripts above
+    ("Normal: real home loan approval (Hinglish)", [
+        "Sir main HDFC bank se bol raha hoon, aapka home loan approve ho gaya hai.",
+        "Processing fee loan amount se hi cut hogi, aap kal branch aakar agreement sign kar dijiye.",
+    ]),
+    ("Normal: policy maturity (Hindi)", [
+        "नमस्ते, मैं आपका LIC एजेंट शर्मा बोल रहा हूँ।",
+        "आपकी पॉलिसी इस साल मैच्योर हो रही है, पूरा पैसा सीधे आपके बैंक खाते में आएगा, आपको कुछ भी जमा नहीं करना है।",
+    ]),
+    ("Normal: gas cylinder delivery OTP (Telugu)", [
+        "అమ్మా, గ్యాస్ సిలిండర్ డెలివరీ వచ్చింది.",
+        "బుకింగ్ ఓ టీ పీ చెప్పండి.",
+    ]),
+    ("Normal: Aadhaar centre visit (Hindi)", [
+        "बेटा, कल आधार सेवा केंद्र जाकर आधार में नया मोबाइल नंबर अपडेट करवा लेना।",
+        "फ़ोटो भी बदलवानी है, सुबह जल्दी चलेंगे।",
+    ]),
+    ("Normal: friend sending a gift (Hinglish)", [
+        "Bhai maine tere birthday ke liye US se gift bheja hai.",
+        "Parcel ka tracking number WhatsApp kar diya hai, next week aa jayega.",
     ]),
 ]
 
