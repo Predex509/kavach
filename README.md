@@ -1,5 +1,7 @@
 # Kavach (कवच) — a live scam-call shield for Indian families
 
+**📄 One-page solution pitch: [PITCH.md](PITCH.md)** · **🎥 Demo video:** _link added at submission_
+
 Put the phone on speaker. Kavach listens to the call, understands it in Hindi, Telugu, Tamil,
 English or a mix, and the moment it hears a scam pattern it **speaks a warning out loud in the
 caller's language**: *"सावधान! यह कॉल धोखाधड़ी लग रही है… अभी कॉल काट दीजिए।"*
